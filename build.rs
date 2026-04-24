@@ -4,6 +4,11 @@ use std::{
     path::{Path, PathBuf},
 };
 
+#[cfg(windows)]
+const LOCAL_CODEC_ROOT_ENV: &str = "RUSTDESK_WINDOWS_CODEC_ROOT";
+#[cfg(windows)]
+const CMAKE_PREFIX_PATH_ENV: &str = "CMAKE_PREFIX_PATH";
+
 fn main() {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let externals_dir = manifest_dir.join("externals");
@@ -98,8 +103,115 @@ mod ffmpeg {
 
     use super::*;
 
+    #[cfg(windows)]
+    fn push_unique(paths: &mut Vec<PathBuf>, path: PathBuf) {
+        if paths.iter().all(|existing| existing != &path) {
+            paths.push(path);
+        }
+    }
+
+    #[cfg(windows)]
+    fn local_roots() -> Vec<PathBuf> {
+        println!("cargo:rerun-if-env-changed={LOCAL_CODEC_ROOT_ENV}");
+        println!("cargo:rerun-if-env-changed={CMAKE_PREFIX_PATH_ENV}");
+
+        let mut roots = Vec::new();
+        if let Some(path) = env::var_os(LOCAL_CODEC_ROOT_ENV) {
+            push_unique(&mut roots, PathBuf::from(path));
+        }
+        if let Some(paths) = env::var_os(CMAKE_PREFIX_PATH_ENV) {
+            for path in env::split_paths(&paths) {
+                push_unique(&mut roots, path);
+            }
+        }
+        roots
+    }
+
+    #[cfg(windows)]
+    fn find_library(root: &Path, names: &[&str]) -> Option<(PathBuf, String)> {
+        for lib_dir in [root.join("lib"), root.join("lib64")] {
+            for name in names {
+                let import_lib = lib_dir.join(format!("{name}.lib"));
+                let static_lib = lib_dir.join(format!("{name}.a"));
+                if import_lib.exists() || static_lib.exists() {
+                    return Some((lib_dir, (*name).to_string()));
+                }
+            }
+        }
+        None
+    }
+
+    #[cfg(windows)]
+    fn link_local_windows(builder: &mut Build) -> bool {
+        let mut ffmpeg_include = None;
+        let mut ffmpeg_lib_dir = None;
+        let mut ffmpeg_lib_names = None;
+        let mut mfx_link = None;
+
+        for root in local_roots() {
+            let include_dir = root.join("include");
+            if ffmpeg_include.is_none()
+                && include_dir.join("libavcodec").join("avcodec.h").exists()
+                && include_dir.join("libavformat").join("avformat.h").exists()
+                && include_dir.join("libavutil").join("avutil.h").exists()
+            {
+                if let (Some(avcodec), Some(avformat), Some(avutil), Some(swresample), Some(zlib)) = (
+                    find_library(&root, &["avcodec"]),
+                    find_library(&root, &["avformat"]),
+                    find_library(&root, &["avutil"]),
+                    find_library(&root, &["swresample"]),
+                    find_library(&root, &["zlib", "zlibstatic", "libz", "z"]),
+                ) {
+                    ffmpeg_include = Some(include_dir);
+                    ffmpeg_lib_dir = Some(avcodec.0);
+                    ffmpeg_lib_names = Some(vec![
+                        avcodec.1,
+                        avutil.1,
+                        avformat.1,
+                        swresample.1,
+                        zlib.1,
+                    ]);
+                }
+            }
+
+            if mfx_link.is_none() {
+                if let Some((lib_dir, link_name)) = find_library(&root, &["libmfx", "mfx"]) {
+                    mfx_link = Some((lib_dir, link_name));
+                }
+            }
+        }
+
+        let (ffmpeg_include, ffmpeg_lib_dir, ffmpeg_lib_names, (mfx_lib_dir, mfx_link_name)) =
+            match (ffmpeg_include, ffmpeg_lib_dir, ffmpeg_lib_names, mfx_link) {
+                (Some(include), Some(lib_dir), Some(lib_names), Some(mfx)) => {
+                    (include, lib_dir, lib_names, mfx)
+                }
+                _ => return false,
+            };
+
+        println!(
+            "cargo:rustc-link-search=native={}",
+            ffmpeg_lib_dir.display()
+        );
+        if mfx_lib_dir != ffmpeg_lib_dir {
+            println!("cargo:rustc-link-search=native={}", mfx_lib_dir.display());
+        }
+        for lib_name in ffmpeg_lib_names {
+            println!("cargo:rustc-link-lib={lib_name}");
+        }
+        println!("cargo:rustc-link-lib={mfx_link_name}");
+        println!("cargo:include={}", ffmpeg_include.display());
+        builder.include(ffmpeg_include);
+        true
+    }
+
     pub fn build_ffmpeg(builder: &mut Build) {
         ffmpeg_ffi();
+        #[cfg(windows)]
+        if !link_local_windows(builder) {
+            link_vcpkg(builder, std::env::var("VCPKG_ROOT").unwrap().into());
+        }
+        #[cfg(not(windows))]
         link_vcpkg(builder, std::env::var("VCPKG_ROOT").unwrap().into());
         link_os();
         build_ffmpeg_ram(builder);
@@ -174,7 +286,19 @@ mod ffmpeg {
         let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap();
         let target_arch = std::env::var("CARGO_CFG_TARGET_ARCH").unwrap();
         let dyn_libs: Vec<&str> = if target_os == "windows" {
-            ["User32", "bcrypt", "ole32", "advapi32"].to_vec()
+            [
+                "User32",
+                "bcrypt",
+                "ole32",
+                "oleaut32",
+                "advapi32",
+                "uuid",
+                "mf",
+                "mfplat",
+                "mfuuid",
+                "strmiids",
+            ]
+            .to_vec()
         } else if target_os == "linux" {
             let mut v = ["drm", "X11", "stdc++"].to_vec();
             if target_arch == "x86_64" {
