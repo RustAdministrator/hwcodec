@@ -98,9 +98,13 @@ mod ffmpeg {
 
     use super::*;
 
+    const CMAKE_PREFIX_PATH_ENV: &str = "CMAKE_PREFIX_PATH";
+    const IOS_CODEC_ROOT_ENV: &str = "RUSTDESK_IOS_CODEC_ROOT";
+    const MACOS_CODEC_ROOT_ENV: &str = "RUSTDESK_MACOS_CODEC_ROOT";
+
     pub fn build_ffmpeg(builder: &mut Build) {
         ffmpeg_ffi();
-        link_vcpkg(builder, std::env::var("VCPKG_ROOT").unwrap().into());
+        link_ffmpeg(builder);
         link_os();
         build_ffmpeg_ram(builder);
         #[cfg(feature = "vram")]
@@ -110,6 +114,166 @@ mod ffmpeg {
         if target_os == "macos" || target_os == "ios" {
             builder.flag("-std=c++11");
         }
+    }
+
+    fn push_unique_path(paths: &mut Vec<PathBuf>, path: PathBuf) {
+        if paths.iter().all(|existing| existing != &path) {
+            paths.push(path);
+        }
+    }
+
+    fn push_prefix_candidate(paths: &mut Vec<PathBuf>, path: PathBuf) {
+        push_unique_path(paths, path.clone());
+
+        if let Some(parent) = path.parent() {
+            if path.file_name().and_then(|name| name.to_str()) == Some("include")
+                || path.file_name().and_then(|name| name.to_str()) == Some("lib")
+            {
+                push_unique_path(paths, parent.to_path_buf());
+            }
+        }
+
+        for ancestor in path.ancestors() {
+            if ancestor.join("include").is_dir() && ancestor.join("lib").is_dir() {
+                push_unique_path(paths, ancestor.to_path_buf());
+                break;
+            }
+        }
+    }
+
+    fn push_prefix_path_list(paths: &mut Vec<PathBuf>, value: &std::ffi::OsStr) {
+        for raw_path in value.to_string_lossy().split([':', ';']) {
+            if !raw_path.is_empty() {
+                push_prefix_candidate(paths, PathBuf::from(raw_path));
+            }
+        }
+    }
+
+    fn codec_root_env(target_os: &str) -> Option<&'static str> {
+        match target_os {
+            "ios" => Some(IOS_CODEC_ROOT_ENV),
+            "macos" => Some(MACOS_CODEC_ROOT_ENV),
+            _ => None,
+        }
+    }
+
+    fn repo_local_dir_name(target_os: &str) -> Option<&'static str> {
+        match target_os {
+            "ios" => Some("ios-codecs"),
+            "macos" => Some("macos-codecs"),
+            _ => None,
+        }
+    }
+
+    fn ffmpeg_roots(target_os: &str) -> Vec<PathBuf> {
+        let mut roots = Vec::new();
+
+        if let Some(env_name) = codec_root_env(target_os) {
+            println!("cargo:rerun-if-env-changed={env_name}");
+            if let Some(path) = env::var_os(env_name) {
+                push_prefix_candidate(&mut roots, PathBuf::from(path));
+            }
+        }
+
+        println!("cargo:rerun-if-env-changed={CMAKE_PREFIX_PATH_ENV}");
+        if let Some(paths) = env::var_os(CMAKE_PREFIX_PATH_ENV) {
+            push_prefix_path_list(&mut roots, &paths);
+        }
+
+        if let Some(local_dir_name) = repo_local_dir_name(target_os) {
+            let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+            let local_candidates = [
+                manifest_dir.join(".local").join(local_dir_name),
+                manifest_dir
+                    .parent()
+                    .map(|parent| parent.join(".local").join(local_dir_name))
+                    .unwrap_or_else(|| PathBuf::from(local_dir_name)),
+                manifest_dir
+                    .parent()
+                    .map(|parent| parent.join("rustdesk").join(".local").join(local_dir_name))
+                    .unwrap_or_else(|| PathBuf::from(local_dir_name)),
+            ];
+            for path in local_candidates {
+                println!("cargo:rerun-if-changed={}", path.display());
+                if path.exists() {
+                    push_prefix_candidate(&mut roots, path);
+                }
+            }
+        }
+
+        roots
+    }
+
+    fn link_ffmpeg_prefix(builder: &mut Build, root: &Path, target_os: &str) -> Option<PathBuf> {
+        let include_dir = root.join("include");
+        for header in [
+            "libavcodec/avcodec.h",
+            "libavutil/avutil.h",
+            "libavformat/avformat.h",
+        ] {
+            if !include_dir.join(header).exists() {
+                return None;
+            }
+        }
+
+        let lib_dir = root.join("lib");
+        let static_libs_available = ["avcodec", "avutil", "avformat"]
+            .iter()
+            .all(|lib| lib_dir.join(format!("lib{lib}.a")).exists());
+        let shared_lib_ext = match target_os {
+            "linux" => Some("so"),
+            "macos" => Some("dylib"),
+            _ => None,
+        };
+        let shared_libs_available = shared_lib_ext
+            .map(|ext| {
+                ["avcodec", "avutil", "avformat"]
+                    .iter()
+                    .all(|lib| lib_dir.join(format!("lib{lib}.{ext}")).exists())
+            })
+            .unwrap_or(false);
+
+        if !static_libs_available && !shared_libs_available {
+            return None;
+        }
+
+        println!("cargo:rustc-link-search=native={}", lib_dir.display());
+        for lib in ["avcodec", "avutil", "avformat"] {
+            if static_libs_available {
+                println!("cargo:rustc-link-lib=static={lib}");
+            } else {
+                println!("cargo:rustc-link-lib={lib}");
+            }
+        }
+        println!("cargo:include={}", include_dir.display());
+        builder.include(&include_dir);
+        Some(include_dir)
+    }
+
+    fn link_ffmpeg(builder: &mut Build) -> PathBuf {
+        let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap();
+        for root in ffmpeg_roots(&target_os) {
+            if let Some(include) = link_ffmpeg_prefix(builder, &root, &target_os) {
+                return include;
+            }
+        }
+
+        if target_os == "ios" || target_os == "macos" {
+            panic!(
+                "Could not find FFmpeg in {} or CMAKE_PREFIX_PATH for target {}. Provide an install prefix containing include/libavcodec, include/libavutil, include/libavformat and lib/libav*.a.",
+                codec_root_env(&target_os).unwrap_or("RUSTDESK_*_CODEC_ROOT"),
+                target_os
+            );
+        }
+
+        if let Ok(vcpkg_root) = std::env::var("VCPKG_ROOT") {
+            return link_vcpkg(builder, vcpkg_root.into());
+        }
+
+        panic!(
+            "Could not find FFmpeg in CMAKE_PREFIX_PATH and VCPKG_ROOT is not set for target {}.",
+            target_os
+        );
     }
 
     fn link_vcpkg(builder: &mut Build, mut path: PathBuf) -> PathBuf {
