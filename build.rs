@@ -6,10 +6,29 @@ use std::{
 
 #[cfg(windows)]
 const LOCAL_CODEC_ROOT_ENV: &str = "RUSTDESK_WINDOWS_CODEC_ROOT";
+#[cfg(target_os = "linux")]
+const LOCAL_CODEC_ROOT_ENV: &str = "RUSTDESK_LINUX_CODEC_ROOT";
+#[cfg(target_os = "macos")]
+const LOCAL_CODEC_ROOT_ENV: &str = "RUSTDESK_MACOS_CODEC_ROOT";
 #[cfg(windows)]
+const RUSTADMIN_LOCAL_CODEC_ROOT_ENV: &str = "RUSTADMIN_WINDOWS_CODEC_ROOT";
+#[cfg(target_os = "linux")]
+const RUSTADMIN_LOCAL_CODEC_ROOT_ENV: &str = "RUSTADMIN_LINUX_CODEC_ROOT";
+#[cfg(target_os = "macos")]
+const RUSTADMIN_LOCAL_CODEC_ROOT_ENV: &str = "RUSTADMIN_MACOS_CODEC_ROOT";
 const CMAKE_PREFIX_PATH_ENV: &str = "CMAKE_PREFIX_PATH";
 #[cfg(windows)]
 const LOCAL_CODEC_LINK_MODE_ENV: &str = "RUSTDESK_WINDOWS_CODEC_LINK_MODE";
+#[cfg(target_os = "linux")]
+const LOCAL_CODEC_LINK_MODE_ENV: &str = "RUSTDESK_LINUX_CODEC_LINK_MODE";
+#[cfg(target_os = "macos")]
+const LOCAL_CODEC_LINK_MODE_ENV: &str = "RUSTDESK_MACOS_CODEC_LINK_MODE";
+#[cfg(windows)]
+const RUSTADMIN_LOCAL_CODEC_LINK_MODE_ENV: &str = "RUSTADMIN_WINDOWS_CODEC_LINK_MODE";
+#[cfg(target_os = "linux")]
+const RUSTADMIN_LOCAL_CODEC_LINK_MODE_ENV: &str = "RUSTADMIN_LINUX_CODEC_LINK_MODE";
+#[cfg(target_os = "macos")]
+const RUSTADMIN_LOCAL_CODEC_LINK_MODE_ENV: &str = "RUSTADMIN_MACOS_CODEC_LINK_MODE";
 
 fn main() {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -107,14 +126,14 @@ mod ffmpeg {
 
     use super::*;
 
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     enum LocalLinkKind {
         Static,
         Dynamic,
     }
 
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     enum LocalLinkMode {
         Auto,
@@ -122,7 +141,7 @@ mod ffmpeg {
         Dynamic,
     }
 
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
     #[derive(Clone, Debug)]
     struct LocalLibrary {
         lib_dir: PathBuf,
@@ -132,34 +151,90 @@ mod ffmpeg {
         runtime_paths: Vec<PathBuf>,
     }
 
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
     fn push_unique(paths: &mut Vec<PathBuf>, path: PathBuf) {
         if paths.iter().all(|existing| existing != &path) {
             paths.push(path);
         }
     }
 
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
+    fn push_prefix_candidate(paths: &mut Vec<PathBuf>, path: PathBuf) {
+        push_unique(paths, path.clone());
+
+        if let Some(parent) = path.parent() {
+            if path.file_name().and_then(|name| name.to_str()) == Some("include")
+                || path.file_name().and_then(|name| name.to_str()) == Some("lib")
+                || path.file_name().and_then(|name| name.to_str()) == Some("lib64")
+            {
+                push_unique(paths, parent.to_path_buf());
+            }
+        }
+
+        for ancestor in path.ancestors() {
+            if ancestor.join("include").is_dir()
+                && (ancestor.join("lib").is_dir() || ancestor.join("lib64").is_dir())
+            {
+                push_unique(paths, ancestor.to_path_buf());
+                break;
+            }
+        }
+    }
+
+    #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
     fn local_roots() -> Vec<PathBuf> {
         println!("cargo:rerun-if-env-changed={LOCAL_CODEC_ROOT_ENV}");
+        println!("cargo:rerun-if-env-changed={RUSTADMIN_LOCAL_CODEC_ROOT_ENV}");
         println!("cargo:rerun-if-env-changed={CMAKE_PREFIX_PATH_ENV}");
         println!("cargo:rerun-if-env-changed={LOCAL_CODEC_LINK_MODE_ENV}");
+        println!("cargo:rerun-if-env-changed={RUSTADMIN_LOCAL_CODEC_LINK_MODE_ENV}");
 
         let mut roots = Vec::new();
         if let Some(path) = env::var_os(LOCAL_CODEC_ROOT_ENV) {
-            push_unique(&mut roots, PathBuf::from(path));
+            push_prefix_candidate(&mut roots, PathBuf::from(path));
+        }
+        if let Some(path) = env::var_os(RUSTADMIN_LOCAL_CODEC_ROOT_ENV) {
+            push_prefix_candidate(&mut roots, PathBuf::from(path));
         }
         if let Some(paths) = env::var_os(CMAKE_PREFIX_PATH_ENV) {
             for path in env::split_paths(&paths) {
-                push_unique(&mut roots, path);
+                push_prefix_candidate(&mut roots, path);
+            }
+        }
+
+        if let Some(manifest_dir) = env::var_os("CARGO_MANIFEST_DIR") {
+            let manifest_dir = Path::new(&manifest_dir);
+            if let Some(workspace_root) = manifest_dir.parent() {
+                #[cfg(windows)]
+                let local_dir = "windows-codecs";
+                #[cfg(target_os = "linux")]
+                let local_dir = "linux-codecs";
+                #[cfg(target_os = "macos")]
+                let local_dir = "macos-codecs";
+
+                for repo_local_root in [
+                    workspace_root
+                        .join("rustdesk-client")
+                        .join(".local")
+                        .join(local_dir),
+                    workspace_root.join(".local").join(local_dir),
+                    manifest_dir.join(".local").join(local_dir),
+                ] {
+                    println!("cargo:rerun-if-changed={}", repo_local_root.display());
+                    if repo_local_root.exists() {
+                        push_prefix_candidate(&mut roots, repo_local_root);
+                    }
+                }
             }
         }
         roots
     }
 
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
     fn local_link_mode() -> LocalLinkMode {
-        match env::var(LOCAL_CODEC_LINK_MODE_ENV) {
+        let mode = env::var(LOCAL_CODEC_LINK_MODE_ENV)
+            .or_else(|_| env::var(RUSTADMIN_LOCAL_CODEC_LINK_MODE_ENV));
+        match mode {
             Ok(value) => match value.trim().to_ascii_lowercase().as_str() {
                 "" | "auto" => LocalLinkMode::Auto,
                 "static" => LocalLinkMode::Static,
@@ -213,7 +288,7 @@ mod ffmpeg {
         dlls
     }
 
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
     fn local_library_from_candidate(
         root: &Path,
         lib_dir: &Path,
@@ -226,7 +301,12 @@ mod ffmpeg {
             return None;
         }
 
+        #[cfg(not(windows))]
+        let _ = root;
+        #[cfg(windows)]
         let runtime_paths = runtime_dlls_for(root, name);
+        #[cfg(not(windows))]
+        let runtime_paths = Vec::new();
         let kind = match mode {
             LocalLinkMode::Static => LocalLinkKind::Static,
             LocalLinkMode::Dynamic => LocalLinkKind::Dynamic,
@@ -294,12 +374,72 @@ mod ffmpeg {
         None
     }
 
-    #[cfg(windows)]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn shared_library_ext() -> &'static str {
+        #[cfg(target_os = "linux")]
+        {
+            "so"
+        }
+        #[cfg(target_os = "macos")]
+        {
+            "dylib"
+        }
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn find_library(root: &Path, names: &[&str], mode: LocalLinkMode) -> Option<LocalLibrary> {
+        for lib_dir in [root.join("lib"), root.join("lib64"), root.to_path_buf()] {
+            for name in names {
+                let normalized = name.trim_start_matches("lib");
+                let dynamic_candidates = [
+                    lib_dir.join(format!("lib{normalized}.{}", shared_library_ext())),
+                    lib_dir.join(format!("{normalized}.{}", shared_library_ext())),
+                ];
+                let static_candidates = [
+                    lib_dir.join(format!("lib{normalized}.a")),
+                    lib_dir.join(format!("{normalized}.a")),
+                ];
+
+                if mode != LocalLinkMode::Static {
+                    for lib_path in dynamic_candidates {
+                        if let Some(lib) = local_library_from_candidate(
+                            root,
+                            &lib_dir,
+                            normalized,
+                            lib_path,
+                            LocalLinkKind::Dynamic,
+                            mode,
+                        ) {
+                            return Some(lib);
+                        }
+                    }
+                }
+
+                if mode != LocalLinkMode::Dynamic {
+                    for lib_path in static_candidates {
+                        if let Some(lib) = local_library_from_candidate(
+                            root,
+                            &lib_dir,
+                            normalized,
+                            lib_path,
+                            LocalLinkKind::Static,
+                            mode,
+                        ) {
+                            return Some(lib);
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
     fn emit_rerun_if_changed(path: &Path) {
         println!("cargo:rerun-if-changed={}", path.display());
     }
 
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
     fn emit_link_search_once(seen: &mut Vec<PathBuf>, lib_dir: &Path) {
         if seen.iter().any(|existing| existing == lib_dir) {
             return;
@@ -308,7 +448,7 @@ mod ffmpeg {
         seen.push(lib_dir.to_path_buf());
     }
 
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
     fn emit_local_library(lib: &LocalLibrary) {
         emit_rerun_if_changed(&lib.lib_path);
         for runtime_path in &lib.runtime_paths {
@@ -333,9 +473,292 @@ mod ffmpeg {
     }
 
     #[cfg(windows)]
+    fn emit_optional_static_dependency(
+        root: &Path,
+        seen_search_dirs: &mut Vec<PathBuf>,
+        names: &[&str],
+    ) {
+        if let Some(lib) = find_library(root, names, LocalLinkMode::Static) {
+            emit_link_search_once(seen_search_dirs, &lib.lib_dir);
+            emit_local_library(&lib);
+        }
+    }
+
+    #[cfg(windows)]
+    fn emit_static_windows_ffmpeg_private_deps(root: &Path, seen_search_dirs: &mut Vec<PathBuf>) {
+        for names in [
+            &["aom"][..],
+            &["dav1d"][..],
+            &["freetype"][..],
+            &["harfbuzz"][..],
+            &["jxl-static", "jxl"][..],
+            &["jxl_cms"][..],
+            &["jxl_threads"][..],
+            &["hwy"][..],
+            &["brotlienc"][..],
+            &["brotlidec"][..],
+            &["brotlicommon"][..],
+            &["lcms2"][..],
+            &["libkvazaar", "kvazaar"][..],
+            &["libmp3lame-static", "mp3lame"][..],
+            &["libmpghip-static", "mpghip"][..],
+            &["openjp2"][..],
+            &["opus"][..],
+            &["vpx"][..],
+            &["libwebpmux", "webpmux"][..],
+            &["libwebpdemux", "webpdemux"][..],
+            &["libwebpdecoder", "webpdecoder"][..],
+            &["libwebp", "webp"][..],
+            &["libsharpyuv", "sharpyuv"][..],
+            &["libx264", "x264"][..],
+            &["x265-static", "x265"][..],
+            &["libxml2s", "xml2"][..],
+            &["iconv"][..],
+            &["charset"][..],
+            &["lzma"][..],
+            &["zstd_static", "zstd"][..],
+            &["bz2", "libbz2"][..],
+            &["libssl", "ssl"][..],
+            &["libcrypto", "crypto"][..],
+            &["vpl"][..],
+        ] {
+            emit_optional_static_dependency(root, seen_search_dirs, names);
+        }
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    const FFMPEG_PC_PACKAGES: &[&str] = &["libavcodec", "libavformat", "libavutil"];
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    const FFMPEG_CORE_LIBS: &[&str] = &["avcodec", "avformat", "avutil", "swresample"];
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn prepend_pkg_config_dirs(root: Option<&Path>, command: &mut std::process::Command) {
+        let mut pkg_config_paths = Vec::new();
+        if let Some(root) = root {
+            for dir in [root.join("lib/pkgconfig"), root.join("lib64/pkgconfig")] {
+                if dir.is_dir() {
+                    push_unique(&mut pkg_config_paths, dir);
+                }
+            }
+        }
+        if let Some(paths) = env::var_os("PKG_CONFIG_PATH") {
+            for path in env::split_paths(&paths) {
+                push_unique(&mut pkg_config_paths, path);
+            }
+        }
+        if let Ok(joined) = env::join_paths(pkg_config_paths) {
+            command.env("PKG_CONFIG_PATH", joined);
+        }
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn run_pkg_config(root: Option<&Path>, args: &[&str]) -> Option<String> {
+        let mut command = std::process::Command::new("pkg-config");
+        prepend_pkg_config_dirs(root, &mut command);
+        command.args(args).args(FFMPEG_PC_PACKAGES);
+
+        let output = command.output().ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        Some(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn parse_pkg_config_cflags(output: &str) -> Vec<PathBuf> {
+        let mut include_paths = Vec::new();
+        let mut iter = output.split_whitespace().peekable();
+        while let Some(token) = iter.next() {
+            if let Some(path) = token.strip_prefix("-I") {
+                if path.is_empty() {
+                    if let Some(path) = iter.next() {
+                        push_unique(&mut include_paths, PathBuf::from(path));
+                    }
+                } else {
+                    push_unique(&mut include_paths, PathBuf::from(path));
+                }
+            }
+        }
+        include_paths
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn emit_library_path(path: &Path, static_link: bool) -> bool {
+        let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+            return false;
+        };
+        let Some(parent) = path.parent() else {
+            return false;
+        };
+        let Some(stripped) = file_name
+            .strip_prefix("lib")
+            .and_then(|name| name.strip_suffix(".a"))
+        else {
+            return false;
+        };
+        println!("cargo:rustc-link-search=native={}", parent.display());
+        if static_link {
+            println!("cargo:rustc-link-lib=static={stripped}");
+        } else {
+            println!("cargo:rustc-link-lib={stripped}");
+        }
+        true
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn emit_pkg_config_libs(output: &str, static_ffmpeg: bool) {
+        let mut iter = output.split_whitespace().peekable();
+        while let Some(token) = iter.next() {
+            if let Some(path) = token.strip_prefix("-L") {
+                if path.is_empty() {
+                    if let Some(path) = iter.next() {
+                        println!("cargo:rustc-link-search=native={path}");
+                    }
+                } else {
+                    println!("cargo:rustc-link-search=native={path}");
+                }
+            } else if let Some(name) = token.strip_prefix("-l") {
+                if name.is_empty() {
+                    if let Some(name) = iter.next() {
+                        emit_pkg_config_lib(name, static_ffmpeg);
+                    }
+                } else {
+                    emit_pkg_config_lib(name, static_ffmpeg);
+                }
+            } else if let Some(path) = token.strip_prefix("-F") {
+                if path.is_empty() {
+                    if let Some(path) = iter.next() {
+                        println!("cargo:rustc-link-search=framework={path}");
+                    }
+                } else {
+                    println!("cargo:rustc-link-search=framework={path}");
+                }
+            } else if token == "-framework" {
+                if let Some(name) = iter.next() {
+                    println!("cargo:rustc-link-lib=framework={name}");
+                }
+            } else if token == "-pthread" {
+                #[cfg(target_os = "linux")]
+                println!("cargo:rustc-link-lib=pthread");
+            } else if token.ends_with(".a") {
+                if !emit_library_path(Path::new(token), true) {
+                    println!("cargo:rustc-link-arg={token}");
+                }
+            }
+        }
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn emit_pkg_config_lib(name: &str, static_ffmpeg: bool) {
+        let normalized = name.trim_start_matches(':').trim_start_matches("lib");
+        let normalized = normalized.strip_suffix(".a").unwrap_or(normalized);
+        if static_ffmpeg && FFMPEG_CORE_LIBS.contains(&normalized) {
+            println!("cargo:rustc-link-lib=static={normalized}");
+        } else {
+            println!("cargo:rustc-link-lib={normalized}");
+        }
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn link_pkg_config_ffmpeg(
+        builder: &mut Build,
+        root: Option<&Path>,
+        static_ffmpeg: bool,
+    ) -> bool {
+        let mut lib_args = vec!["--libs"];
+        if static_ffmpeg {
+            lib_args.push("--static");
+        }
+        let Some(libs) = run_pkg_config(root, &lib_args) else {
+            return false;
+        };
+        let Some(cflags) = run_pkg_config(root, &["--cflags"]) else {
+            return false;
+        };
+
+        let mut include_paths = parse_pkg_config_cflags(&cflags);
+        if let Some(root) = root {
+            let include_dir = root.join("include");
+            if include_dir.is_dir() {
+                push_unique(&mut include_paths, include_dir);
+            }
+        }
+        for include in include_paths {
+            println!("cargo:include={}", include.display());
+            emit_rerun_if_changed(&include);
+            builder.include(include);
+        }
+        emit_pkg_config_libs(&libs, static_ffmpeg);
+        println!(
+            "cargo:warning=Using {} FFmpeg libraries from pkg-config",
+            if static_ffmpeg { "static" } else { "dynamic" }
+        );
+        true
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn link_local_unix(builder: &mut Build) -> bool {
+        let link_mode = local_link_mode();
+
+        for root in local_roots() {
+            let include_dir = root.join("include");
+            let avcodec_header = include_dir.join("libavcodec").join("avcodec.h");
+            let avformat_header = include_dir.join("libavformat").join("avformat.h");
+            let avutil_header = include_dir.join("libavutil").join("avutil.h");
+            if !avcodec_header.exists() || !avformat_header.exists() || !avutil_header.exists() {
+                continue;
+            }
+
+            let Some(avcodec) = find_library(&root, &["avcodec"], link_mode) else {
+                continue;
+            };
+            let Some(avformat) = find_library(&root, &["avformat"], link_mode) else {
+                continue;
+            };
+            let Some(avutil) = find_library(&root, &["avutil"], link_mode) else {
+                continue;
+            };
+
+            let ffmpeg_libs = vec![avcodec, avformat, avutil];
+            let uses_static_ffmpeg = ffmpeg_libs
+                .iter()
+                .any(|lib| lib.kind == LocalLinkKind::Static);
+            if link_pkg_config_ffmpeg(builder, Some(&root), uses_static_ffmpeg) {
+                return true;
+            }
+            if uses_static_ffmpeg {
+                panic!(
+                    "Static FFmpeg libraries were found in '{}', but pkg-config metadata for libavcodec/libavformat/libavutil was not usable. Static FFmpeg with hardware-codec deps needs .pc files so private libraries are linked correctly.",
+                    root.display()
+                );
+            }
+
+            let mut link_search_dirs = Vec::new();
+            for lib in &ffmpeg_libs {
+                emit_link_search_once(&mut link_search_dirs, &lib.lib_dir);
+                emit_local_library(lib);
+            }
+            for header in [&avcodec_header, &avformat_header, &avutil_header] {
+                emit_rerun_if_changed(header);
+            }
+            println!("cargo:include={}", include_dir.display());
+            emit_rerun_if_changed(&include_dir);
+            builder.include(include_dir);
+            println!(
+                "cargo:warning=Using dynamic FFmpeg libraries from {}",
+                root.display()
+            );
+            return true;
+        }
+
+        false
+    }
+
+    #[cfg(windows)]
     fn link_local_windows(builder: &mut Build) -> bool {
         let link_mode = local_link_mode();
         let mut ffmpeg_include = None;
+        let mut ffmpeg_root = None;
         let mut ffmpeg_libs = None;
         let mut mfx_link = None;
 
@@ -360,6 +783,7 @@ mod ffmpeg {
                     emit_rerun_if_changed(&avformat_header);
                     emit_rerun_if_changed(&avutil_header);
                     ffmpeg_include = Some(include_dir);
+                    ffmpeg_root = Some(root.clone());
                     ffmpeg_libs = Some(vec![avcodec, avutil, avformat, swresample, zlib]);
                 }
             }
@@ -371,10 +795,11 @@ mod ffmpeg {
             }
         }
 
-        let (ffmpeg_include, ffmpeg_libs, mfx_lib) = match (ffmpeg_include, ffmpeg_libs, mfx_link) {
-            (Some(include), Some(libs), Some(mfx)) => (include, libs, mfx),
-            _ => return false,
-        };
+        let (ffmpeg_include, ffmpeg_root, ffmpeg_libs, mfx_lib) =
+            match (ffmpeg_include, ffmpeg_root, ffmpeg_libs, mfx_link) {
+                (Some(include), Some(root), Some(libs), Some(mfx)) => (include, root, libs, mfx),
+                _ => return false,
+            };
 
         let uses_static_ffmpeg = ffmpeg_libs
             .iter()
@@ -389,6 +814,7 @@ mod ffmpeg {
         emit_local_library(&mfx_lib);
         if uses_static_ffmpeg {
             emit_static_windows_ffmpeg_deps();
+            emit_static_windows_ffmpeg_private_deps(&ffmpeg_root, &mut link_search_dirs);
         }
 
         let link_summary = match (
@@ -415,7 +841,18 @@ mod ffmpeg {
         if !link_local_windows(builder) {
             link_vcpkg(builder, std::env::var("VCPKG_ROOT").unwrap().into());
         }
-        #[cfg(not(windows))]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        if !link_local_unix(builder)
+            && !link_pkg_config_ffmpeg(builder, None, local_link_mode() == LocalLinkMode::Static)
+        {
+            link_vcpkg(
+                builder,
+                std::env::var("VCPKG_ROOT")
+                    .expect("VCPKG_ROOT is unset and no local/pkg-config FFmpeg was found")
+                    .into(),
+            );
+        }
+        #[cfg(all(not(windows), not(target_os = "linux"), not(target_os = "macos")))]
         link_vcpkg(builder, std::env::var("VCPKG_ROOT").unwrap().into());
         link_os();
         build_ffmpeg_ram(builder);
