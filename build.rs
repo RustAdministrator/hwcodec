@@ -842,15 +842,26 @@ mod ffmpeg {
             link_vcpkg(builder, std::env::var("VCPKG_ROOT").unwrap().into());
         }
         #[cfg(any(target_os = "linux", target_os = "macos"))]
-        if !link_local_unix(builder)
-            && !link_pkg_config_ffmpeg(builder, None, local_link_mode() == LocalLinkMode::Static)
         {
-            link_vcpkg(
-                builder,
-                std::env::var("VCPKG_ROOT")
-                    .expect("VCPKG_ROOT is unset and no local/pkg-config FFmpeg was found")
-                    .into(),
-            );
+            let cargo_target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap();
+            if cargo_target_os == "linux" || cargo_target_os == "macos" {
+                if !link_local_unix(builder)
+                    && !link_pkg_config_ffmpeg(
+                        builder,
+                        None,
+                        local_link_mode() == LocalLinkMode::Static,
+                    )
+                {
+                    link_vcpkg(
+                        builder,
+                        std::env::var("VCPKG_ROOT")
+                            .expect("VCPKG_ROOT is unset and no local/pkg-config FFmpeg was found")
+                            .into(),
+                    );
+                }
+            } else {
+                link_vcpkg(builder, std::env::var("VCPKG_ROOT").unwrap().into());
+            }
         }
         #[cfg(all(not(windows), not(target_os = "linux"), not(target_os = "macos")))]
         link_vcpkg(builder, std::env::var("VCPKG_ROOT").unwrap().into());
