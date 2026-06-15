@@ -8,6 +8,8 @@ use std::{
 const LOCAL_CODEC_ROOT_ENV: &str = "RUSTDESK_WINDOWS_CODEC_ROOT";
 #[cfg(windows)]
 const CMAKE_PREFIX_PATH_ENV: &str = "CMAKE_PREFIX_PATH";
+#[cfg(windows)]
+const LOCAL_CODEC_LINK_MODE_ENV: &str = "RUSTDESK_WINDOWS_CODEC_LINK_MODE";
 
 fn main() {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -43,7 +45,9 @@ fn build_common(builder: &mut Build) {
     // system
     #[cfg(windows)]
     {
-        ["d3d11", "dxgi"].map(|lib| println!("cargo:rustc-link-lib={}", lib));
+        for lib in ["d3d11", "dxgi"] {
+            println!("cargo:rustc-link-lib={lib}");
+        }
     }
 
     builder.include(&common_dir);
@@ -104,6 +108,31 @@ mod ffmpeg {
     use super::*;
 
     #[cfg(windows)]
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum LocalLinkKind {
+        Static,
+        Dynamic,
+    }
+
+    #[cfg(windows)]
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum LocalLinkMode {
+        Auto,
+        Static,
+        Dynamic,
+    }
+
+    #[cfg(windows)]
+    #[derive(Clone, Debug)]
+    struct LocalLibrary {
+        lib_dir: PathBuf,
+        lib_path: PathBuf,
+        link_name: String,
+        kind: LocalLinkKind,
+        runtime_paths: Vec<PathBuf>,
+    }
+
+    #[cfg(windows)]
     fn push_unique(paths: &mut Vec<PathBuf>, path: PathBuf) {
         if paths.iter().all(|existing| existing != &path) {
             paths.push(path);
@@ -114,6 +143,7 @@ mod ffmpeg {
     fn local_roots() -> Vec<PathBuf> {
         println!("cargo:rerun-if-env-changed={LOCAL_CODEC_ROOT_ENV}");
         println!("cargo:rerun-if-env-changed={CMAKE_PREFIX_PATH_ENV}");
+        println!("cargo:rerun-if-env-changed={LOCAL_CODEC_LINK_MODE_ENV}");
 
         let mut roots = Vec::new();
         if let Some(path) = env::var_os(LOCAL_CODEC_ROOT_ENV) {
@@ -128,13 +158,136 @@ mod ffmpeg {
     }
 
     #[cfg(windows)]
-    fn find_library(root: &Path, names: &[&str]) -> Option<(PathBuf, String)> {
+    fn local_link_mode() -> LocalLinkMode {
+        match env::var(LOCAL_CODEC_LINK_MODE_ENV) {
+            Ok(value) => match value.trim().to_ascii_lowercase().as_str() {
+                "" | "auto" => LocalLinkMode::Auto,
+                "static" => LocalLinkMode::Static,
+                "dynamic" | "dylib" | "shared" => LocalLinkMode::Dynamic,
+                other => panic!(
+                    "{} must be one of auto, static, or dynamic, got '{}'",
+                    LOCAL_CODEC_LINK_MODE_ENV, other
+                ),
+            },
+            Err(_) => LocalLinkMode::Auto,
+        }
+    }
+
+    #[cfg(windows)]
+    fn path_file_name_lower(path: &Path) -> Option<String> {
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .map(|name| name.to_ascii_lowercase())
+    }
+
+    #[cfg(windows)]
+    fn runtime_dlls_for(root: &Path, name: &str) -> Vec<PathBuf> {
+        let needle = name.trim_start_matches("lib").to_ascii_lowercase();
+        let lib_needle = format!("lib{needle}");
+        let mut dlls = Vec::new();
+
+        for dir in [
+            root.join("bin"),
+            root.join("lib"),
+            root.join("lib64"),
+            root.to_path_buf(),
+        ] {
+            let Ok(entries) = std::fs::read_dir(dir) else {
+                continue;
+            };
+
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let Some(file_name) = path_file_name_lower(&path) else {
+                    continue;
+                };
+                if !file_name.ends_with(".dll") {
+                    continue;
+                }
+                if file_name.starts_with(&needle) || file_name.starts_with(&lib_needle) {
+                    push_unique(&mut dlls, path);
+                }
+            }
+        }
+
+        dlls
+    }
+
+    #[cfg(windows)]
+    fn local_library_from_candidate(
+        root: &Path,
+        lib_dir: &Path,
+        name: &str,
+        lib_path: PathBuf,
+        default_kind: LocalLinkKind,
+        mode: LocalLinkMode,
+    ) -> Option<LocalLibrary> {
+        if !lib_path.exists() {
+            return None;
+        }
+
+        let runtime_paths = runtime_dlls_for(root, name);
+        let kind = match mode {
+            LocalLinkMode::Static => LocalLinkKind::Static,
+            LocalLinkMode::Dynamic => LocalLinkKind::Dynamic,
+            LocalLinkMode::Auto => {
+                if default_kind == LocalLinkKind::Dynamic || !runtime_paths.is_empty() {
+                    LocalLinkKind::Dynamic
+                } else {
+                    LocalLinkKind::Static
+                }
+            }
+        };
+
+        Some(LocalLibrary {
+            lib_dir: lib_dir.to_path_buf(),
+            lib_path,
+            link_name: name.to_string(),
+            kind,
+            runtime_paths,
+        })
+    }
+
+    #[cfg(windows)]
+    fn find_library(root: &Path, names: &[&str], mode: LocalLinkMode) -> Option<LocalLibrary> {
         for lib_dir in [root.join("lib"), root.join("lib64")] {
             for name in names {
-                let import_lib = lib_dir.join(format!("{name}.lib"));
-                let static_lib = lib_dir.join(format!("{name}.a"));
-                if import_lib.exists() || static_lib.exists() {
-                    return Some((lib_dir, (*name).to_string()));
+                let dynamic_candidates = [
+                    lib_dir.join(format!("lib{name}.dll.a")),
+                    lib_dir.join(format!("{name}.dll.a")),
+                ];
+                let static_candidates = [
+                    lib_dir.join(format!("{name}.lib")),
+                    lib_dir.join(format!("lib{name}.a")),
+                    lib_dir.join(format!("{name}.a")),
+                ];
+
+                if mode != LocalLinkMode::Static {
+                    for lib_path in dynamic_candidates {
+                        if let Some(lib) = local_library_from_candidate(
+                            root,
+                            &lib_dir,
+                            name,
+                            lib_path,
+                            LocalLinkKind::Dynamic,
+                            mode,
+                        ) {
+                            return Some(lib);
+                        }
+                    }
+                }
+
+                for lib_path in static_candidates {
+                    if let Some(lib) = local_library_from_candidate(
+                        root,
+                        &lib_dir,
+                        name,
+                        lib_path,
+                        LocalLinkKind::Static,
+                        mode,
+                    ) {
+                        return Some(lib);
+                    }
                 }
             }
         }
@@ -142,65 +295,116 @@ mod ffmpeg {
     }
 
     #[cfg(windows)]
+    fn emit_rerun_if_changed(path: &Path) {
+        println!("cargo:rerun-if-changed={}", path.display());
+    }
+
+    #[cfg(windows)]
+    fn emit_link_search_once(seen: &mut Vec<PathBuf>, lib_dir: &Path) {
+        if seen.iter().any(|existing| existing == lib_dir) {
+            return;
+        }
+        println!("cargo:rustc-link-search=native={}", lib_dir.display());
+        seen.push(lib_dir.to_path_buf());
+    }
+
+    #[cfg(windows)]
+    fn emit_local_library(lib: &LocalLibrary) {
+        emit_rerun_if_changed(&lib.lib_path);
+        for runtime_path in &lib.runtime_paths {
+            emit_rerun_if_changed(runtime_path);
+        }
+
+        match lib.kind {
+            LocalLinkKind::Static => {
+                println!("cargo:rustc-link-lib=static={}", lib.link_name);
+            }
+            LocalLinkKind::Dynamic => {
+                println!("cargo:rustc-link-lib={}", lib.link_name);
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    fn emit_static_windows_ffmpeg_deps() {
+        for lib in ["secur32", "ncrypt", "crypt32", "ws2_32"] {
+            println!("cargo:rustc-link-lib={lib}");
+        }
+    }
+
+    #[cfg(windows)]
     fn link_local_windows(builder: &mut Build) -> bool {
+        let link_mode = local_link_mode();
         let mut ffmpeg_include = None;
-        let mut ffmpeg_lib_dir = None;
-        let mut ffmpeg_lib_names = None;
+        let mut ffmpeg_libs = None;
         let mut mfx_link = None;
 
         for root in local_roots() {
             let include_dir = root.join("include");
+            let avcodec_header = include_dir.join("libavcodec").join("avcodec.h");
+            let avformat_header = include_dir.join("libavformat").join("avformat.h");
+            let avutil_header = include_dir.join("libavutil").join("avutil.h");
             if ffmpeg_include.is_none()
-                && include_dir.join("libavcodec").join("avcodec.h").exists()
-                && include_dir.join("libavformat").join("avformat.h").exists()
-                && include_dir.join("libavutil").join("avutil.h").exists()
+                && avcodec_header.exists()
+                && avformat_header.exists()
+                && avutil_header.exists()
             {
                 if let (Some(avcodec), Some(avformat), Some(avutil), Some(swresample), Some(zlib)) = (
-                    find_library(&root, &["avcodec"]),
-                    find_library(&root, &["avformat"]),
-                    find_library(&root, &["avutil"]),
-                    find_library(&root, &["swresample"]),
-                    find_library(&root, &["zlib", "zlibstatic", "libz", "z"]),
+                    find_library(&root, &["avcodec"], link_mode),
+                    find_library(&root, &["avformat"], link_mode),
+                    find_library(&root, &["avutil"], link_mode),
+                    find_library(&root, &["swresample"], link_mode),
+                    find_library(&root, &["zlib", "zlibstatic", "libz", "z"], link_mode),
                 ) {
+                    emit_rerun_if_changed(&avcodec_header);
+                    emit_rerun_if_changed(&avformat_header);
+                    emit_rerun_if_changed(&avutil_header);
                     ffmpeg_include = Some(include_dir);
-                    ffmpeg_lib_dir = Some(avcodec.0);
-                    ffmpeg_lib_names = Some(vec![
-                        avcodec.1,
-                        avutil.1,
-                        avformat.1,
-                        swresample.1,
-                        zlib.1,
-                    ]);
+                    ffmpeg_libs = Some(vec![avcodec, avutil, avformat, swresample, zlib]);
                 }
             }
 
             if mfx_link.is_none() {
-                if let Some((lib_dir, link_name)) = find_library(&root, &["libmfx", "mfx"]) {
-                    mfx_link = Some((lib_dir, link_name));
+                if let Some(lib) = find_library(&root, &["libmfx", "mfx"], link_mode) {
+                    mfx_link = Some(lib);
                 }
             }
         }
 
-        let (ffmpeg_include, ffmpeg_lib_dir, ffmpeg_lib_names, (mfx_lib_dir, mfx_link_name)) =
-            match (ffmpeg_include, ffmpeg_lib_dir, ffmpeg_lib_names, mfx_link) {
-                (Some(include), Some(lib_dir), Some(lib_names), Some(mfx)) => {
-                    (include, lib_dir, lib_names, mfx)
-                }
-                _ => return false,
-            };
+        let (ffmpeg_include, ffmpeg_libs, mfx_lib) = match (ffmpeg_include, ffmpeg_libs, mfx_link) {
+            (Some(include), Some(libs), Some(mfx)) => (include, libs, mfx),
+            _ => return false,
+        };
 
-        println!(
-            "cargo:rustc-link-search=native={}",
-            ffmpeg_lib_dir.display()
-        );
-        if mfx_lib_dir != ffmpeg_lib_dir {
-            println!("cargo:rustc-link-search=native={}", mfx_lib_dir.display());
+        let uses_static_ffmpeg = ffmpeg_libs
+            .iter()
+            .any(|lib| lib.kind == LocalLinkKind::Static);
+        let mut link_search_dirs = Vec::new();
+        for lib in ffmpeg_libs.iter().chain(std::iter::once(&mfx_lib)) {
+            emit_link_search_once(&mut link_search_dirs, &lib.lib_dir);
         }
-        for lib_name in ffmpeg_lib_names {
-            println!("cargo:rustc-link-lib={lib_name}");
+        for lib in &ffmpeg_libs {
+            emit_local_library(lib);
         }
-        println!("cargo:rustc-link-lib={mfx_link_name}");
+        emit_local_library(&mfx_lib);
+        if uses_static_ffmpeg {
+            emit_static_windows_ffmpeg_deps();
+        }
+
+        let link_summary = match (
+            uses_static_ffmpeg,
+            ffmpeg_libs
+                .iter()
+                .any(|lib| lib.kind == LocalLinkKind::Dynamic),
+        ) {
+            (true, true) => "mixed",
+            (true, false) => "static",
+            (false, true) => "dynamic",
+            _ => return false,
+        };
+        println!("cargo:warning=Using local Windows FFmpeg libraries ({link_summary} link)");
         println!("cargo:include={}", ffmpeg_include.display());
+        emit_rerun_if_changed(&ffmpeg_include);
         builder.include(ffmpeg_include);
         true
     }
@@ -287,16 +491,8 @@ mod ffmpeg {
         let target_arch = std::env::var("CARGO_CFG_TARGET_ARCH").unwrap();
         let dyn_libs: Vec<&str> = if target_os == "windows" {
             [
-                "User32",
-                "bcrypt",
-                "ole32",
-                "oleaut32",
-                "advapi32",
-                "uuid",
-                "mf",
-                "mfplat",
-                "mfuuid",
-                "strmiids",
+                "User32", "bcrypt", "ole32", "oleaut32", "advapi32", "uuid", "mf", "mfplat",
+                "mfuuid", "strmiids",
             ]
             .to_vec()
         } else if target_os == "linux" {
