@@ -4,6 +4,7 @@ extern "C" {
 #include <libavutil/imgutils.h>
 #include <libavutil/log.h>
 #include <libavutil/opt.h>
+#include <libavutil/time.h>
 }
 
 #ifdef _WIN32
@@ -323,9 +324,11 @@ private:
     auto start = util::now();
     while (ret >= 0 && util::elapsed_ms(start) < ENCODE_TIMEOUT_MS) {
       if ((ret = avcodec_receive_packet(c_, pkt_)) < 0) {
-        if (ret != AVERROR(EAGAIN)) {
-          LOG_ERROR(std::string("avcodec_receive_packet failed, ret = ") + av_err2str(ret));
+        if (ret == AVERROR(EAGAIN)) {
+          av_usleep(1000);
+          continue;
         }
+        LOG_ERROR(std::string("avcodec_receive_packet failed, ret = ") + av_err2str(ret));
         goto _exit;
       }
       if (!pkt_->data || !pkt_->size) {
