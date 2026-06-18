@@ -325,8 +325,8 @@ private:
     while (ret >= 0 && util::elapsed_ms(start) < ENCODE_TIMEOUT_MS) {
       if ((ret = avcodec_receive_packet(c_, pkt_)) < 0) {
         if (ret == AVERROR(EAGAIN)) {
-          av_usleep(1000);
-          continue;
+          av_packet_unref(pkt_);
+          return encoded ? HWCODEC_SUCCESS : HWCODEC_ERR_NO_PACKET;
         }
         LOG_ERROR(std::string("avcodec_receive_packet failed, ret = ") + av_err2str(ret));
         goto _exit;
@@ -339,10 +339,11 @@ private:
       if (callback)
         callback(pkt_->data, pkt_->size, pkt_->flags & AV_PKT_FLAG_KEY, obj,
                  pkt_->pts);
+      av_packet_unref(pkt_);
     }
   _exit:
     av_packet_unref(pkt_);
-    return encoded ? 0 : -1;
+    return encoded ? HWCODEC_SUCCESS : HWCODEC_ERR_COMMON;
   }
 
   bool convert(void *texture) {

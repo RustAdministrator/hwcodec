@@ -340,7 +340,6 @@ private:
   int do_encode(AVFrame *frame, const void *obj, int64_t ms) {
     int ret;
     bool encoded = false;
-    bool need_more_output = false;
     frame->pts = ms;
     if ((ret = avcodec_send_frame(c_, frame)) < 0) {
       LOG_ERROR(std::string("avcodec_send_frame failed, ret = ") + av_err2str(ret));
@@ -351,9 +350,8 @@ private:
     while (util::elapsed_ms(start) < ENCODE_TIMEOUT_MS) {
       if ((ret = avcodec_receive_packet(c_, pkt_)) < 0) {
         if (ret == AVERROR(EAGAIN)) {
-          need_more_output = true;
-          av_usleep(1000);
-          continue;
+          av_packet_unref(pkt_);
+          return encoded ? HWCODEC_SUCCESS : HWCODEC_ERR_NO_PACKET;
         }
         LOG_ERROR(std::string("avcodec_receive_packet failed, ret = ") + av_err2str(ret));
         goto _exit;
@@ -365,10 +363,11 @@ private:
       encoded = true;
       callback_(pkt_->data, pkt_->size, pkt_->pts,
                 pkt_->flags & AV_PKT_FLAG_KEY, obj);
+      av_packet_unref(pkt_);
     }
   _exit:
     av_packet_unref(pkt_);
-    return encoded || need_more_output ? 0 : -1;
+    return encoded ? HWCODEC_SUCCESS : HWCODEC_ERR_COMMON;
   }
 
   int fill_frame(AVFrame *frame, uint8_t *data, int data_length,

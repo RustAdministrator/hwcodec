@@ -1,7 +1,7 @@
 use crate::{
     common::{
         DataFormat::{self, *},
-        Quality, RateControl, TEST_TIMEOUT_MS,
+        HwcodecErrno, Quality, RateControl, TEST_TIMEOUT_MS,
     },
     ffmpeg::{init_av_log, AVPixelFormat},
     ffmpeg_ram::{
@@ -24,6 +24,7 @@ use crate::common::Driver;
 
 const PROBE_WARMUP_TIMEOUT: Duration = Duration::from_secs(3);
 const PROBE_FRAME_INTERVAL_MS: i64 = 33;
+const ERR_NO_PACKET: i32 = HwcodecErrno::HWCODEC_ERR_NO_PACKET as i32;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct EncodeContext {
@@ -422,6 +423,13 @@ impl Encoder {
                         return EncoderProbeStatus::HardFailure;
                     }
                 }
+                Err(err) if err == ERR_NO_PACKET => {
+                    let encode_elapsed = encode_started_at.elapsed().as_millis();
+                    debug!(
+                        "Encoder {} probe attempt {} returned no packet yet after {}ms",
+                        codec.name, attempt, encode_elapsed
+                    );
+                }
                 Err(err) => {
                     debug!(
                         "Encoder {} test attempt {} returned error: {}",
@@ -434,6 +442,7 @@ impl Encoder {
             if started_at.elapsed() >= PROBE_WARMUP_TIMEOUT {
                 return EncoderProbeStatus::TransientFailure;
             }
+            std::thread::sleep(Duration::from_millis(PROBE_FRAME_INTERVAL_MS as u64));
         }
     }
 

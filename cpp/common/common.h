@@ -51,6 +51,7 @@ enum HwcodecErrno {
   HWCODEC_SUCCESS = 0,
   HWCODEC_ERR_COMMON = -1,
   HWCODEC_ERR_HEVC_COULD_NOT_FIND_POC = -2,
+  HWCODEC_ERR_NO_PACKET = -3,
 };
 
 #endif // COMMON_H
