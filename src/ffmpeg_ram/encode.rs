@@ -166,7 +166,7 @@ impl Encoder {
     }
 
     pub fn available_encoders(ctx: EncodeContext, _sdk: Option<String>) -> Vec<CodecInfo> {
-        use log::debug;
+        use log::{debug, warn};
 
         if !(cfg!(windows) || cfg!(target_os = "linux") || cfg!(target_os = "macos")) {
             return vec![];
@@ -298,6 +298,7 @@ impl Encoder {
         });
 
         let mut res = vec![];
+        let mut validation_failed = vec![];
 
         if let Ok(yuv) = Encoder::dummy_yuv(ctx.clone()) {
             for codec in codecs {
@@ -377,18 +378,38 @@ impl Encoder {
                         }
 
                         if !passed {
-                            debug!(
-                                "Encoder {} test failed after retries{}",
+                            warn!(
+                                "Encoder {} validation failed after retries{}, keeping it advertised for runtime fallback",
                                 codec.name,
                                 last_err
                                     .map(|e| format!(" (last err: {})", e))
                                     .unwrap_or_default()
                             );
+                            if !validation_failed
+                                .iter()
+                                .any(|existing: &CodecInfo| existing.format == codec.format)
+                            {
+                                validation_failed.push(codec.clone());
+                            }
                         }
                     }
                     Err(_) => {
                         debug!("Failed to create encoder {}", codec.name);
                     }
+                }
+            }
+
+            for codec in validation_failed {
+                if !res
+                    .iter()
+                    .any(|existing: &CodecInfo| existing.format == codec.format)
+                {
+                    warn!(
+                        "No fully validated {:?} hardware encoder was found, advertising {} because it was created successfully",
+                        codec.format,
+                        codec.name
+                    );
+                    res.push(codec);
                 }
             }
         } else {
