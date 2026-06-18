@@ -54,6 +54,7 @@ fn build_common(builder: &mut Build) {
     bindgen::builder()
         .header(common_dir.join("common.h").to_string_lossy().to_string())
         .header(common_dir.join("callback.h").to_string_lossy().to_string())
+        .layout_tests(false)
         .rustified_enum("*")
         .parse_callbacks(Box::new(CommonCallbacks))
         .generate()
@@ -981,6 +982,7 @@ mod ffmpeg {
             .to_string();
         bindgen::builder()
             .header(ffi_header)
+            .layout_tests(false)
             .rustified_enum("*")
             .generate()
             .unwrap()
@@ -997,6 +999,7 @@ mod ffmpeg {
             .to_string();
         bindgen::builder()
             .header(ffi_header)
+            .layout_tests(false)
             .rustified_enum("*")
             .generate()
             .unwrap()
@@ -1018,6 +1021,7 @@ mod ffmpeg {
             .to_string();
         bindgen::builder()
             .header(ffi_header)
+            .layout_tests(false)
             .rustified_enum("*")
             .generate()
             .unwrap()
@@ -1035,6 +1039,7 @@ mod ffmpeg {
         let mux_header = mux_dir.join("mux_ffi.h").to_string_lossy().to_string();
         bindgen::builder()
             .header(mux_header)
+            .layout_tests(false)
             .rustified_enum("*")
             .generate()
             .unwrap()
@@ -1065,6 +1070,7 @@ mod sdk {
         println!("cargo:rerun-if-changed={}", externals_dir.display());
         bindgen::builder()
             .header(&nv_dir.join("nv_ffi.h").to_string_lossy().to_string())
+            .layout_tests(false)
             .rustified_enum("*")
             .generate()
             .unwrap()
@@ -1130,6 +1136,7 @@ mod sdk {
         println!("cargo:rerun-if-changed={}", externals_dir.display());
         bindgen::builder()
             .header(amf_dir.join("amf_ffi.h").to_string_lossy().to_string())
+            .layout_tests(false)
             .rustified_enum("*")
             .generate()
             .unwrap()
@@ -1172,6 +1179,7 @@ mod sdk {
         println!("cargo:rerun-if-changed={}", externals_dir.display());
         bindgen::builder()
             .header(&mfx_dir.join("mfx_ffi.h").to_string_lossy().to_string())
+            .layout_tests(false)
             .rustified_enum("*")
             .generate()
             .unwrap()

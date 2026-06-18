@@ -8,6 +8,11 @@ edition = "2021"
 [features]
 default = []
 vram = []
+windows-vram-example = ["vram"]
+
+[[example]]
+name = "pipeline_vram"
+required-features = ["windows-vram-example"]
 
 [dependencies]
 log = "0.4"

@@ -10,6 +10,7 @@ fn main() {
     let ffi_header = "src/tool_ffi.h";
     bindgen::builder()
         .header(ffi_header)
+        .layout_tests(false)
         .rustified_enum("*")
         .generate()
         .unwrap()

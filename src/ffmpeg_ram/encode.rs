@@ -9,17 +9,21 @@ use crate::{
         ffmpeg_ram_new_encoder, ffmpeg_ram_set_bitrate, CodecInfo, AV_NUM_DATA_POINTERS,
     },
 };
-use log::trace;
+use log::{debug, trace, warn};
 use std::{
     ffi::{c_void, CString},
     fmt::Display,
     os::raw::c_int,
     slice,
+    time::{Duration, Instant},
 };
 
 use super::Priority;
 #[cfg(any(windows, target_os = "linux"))]
 use crate::common::Driver;
+
+const PROBE_WARMUP_TIMEOUT: Duration = Duration::from_secs(3);
+const PROBE_FRAME_INTERVAL_MS: i64 = 33;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct EncodeContext {
@@ -42,6 +46,19 @@ pub struct EncodeFrame {
     pub data: Vec<u8>,
     pub pts: i64,
     pub key: i32,
+}
+
+#[derive(Debug, Default)]
+pub struct AvailableEncoders {
+    pub codecs: Vec<CodecInfo>,
+    pub transient_failure: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EncoderProbeStatus {
+    Valid,
+    TransientFailure,
+    HardFailure,
 }
 
 impl Display for EncodeFrame {
@@ -165,11 +182,16 @@ impl Encoder {
         Err(())
     }
 
-    pub fn available_encoders(ctx: EncodeContext, _sdk: Option<String>) -> Vec<CodecInfo> {
-        use log::{debug, warn};
+    pub fn available_encoders(ctx: EncodeContext, sdk: Option<String>) -> Vec<CodecInfo> {
+        Self::available_encoders_with_probe_report(ctx, sdk).codecs
+    }
 
+    pub fn available_encoders_with_probe_report(
+        ctx: EncodeContext,
+        _sdk: Option<String>,
+    ) -> AvailableEncoders {
         if !(cfg!(windows) || cfg!(target_os = "linux") || cfg!(target_os = "macos")) {
-            return vec![];
+            return AvailableEncoders::default();
         }
         let mut codecs: Vec<CodecInfo> = vec![];
         #[cfg(any(windows, target_os = "linux"))]
@@ -297,13 +319,13 @@ impl Encoder {
             return true;
         });
 
-        let mut res = vec![];
-        let mut validation_failed = vec![];
+        let mut res = AvailableEncoders::default();
 
         if let Ok(yuv) = Encoder::dummy_yuv(ctx.clone()) {
             for codec in codecs {
                 // Skip if this format already exists in results
                 if res
+                    .codecs
                     .iter()
                     .any(|existing: &CodecInfo| existing.format == codec.format)
                 {
@@ -311,105 +333,20 @@ impl Encoder {
                 }
 
                 debug!("Testing encoder: {}", codec.name);
-
-                let c = EncodeContext {
-                    name: codec.name.clone(),
-                    mc_name: codec.mc_name.clone(),
-                    ..ctx
-                };
-
-                match Encoder::new(c) {
-                    Ok(mut encoder) => {
-                        debug!("Encoder {} created successfully", codec.name);
-                        let mut passed = false;
-                        let mut last_err: Option<i32> = None;
-
-                        let max_attempts = if cfg!(all(target_os = "macos", target_arch = "x86_64"))
-                        {
-                            3
-                        } else {
-                            1
-                        };
-                        for attempt in 0..max_attempts {
-                            let pts = (attempt as i64) * 33; // 33ms is an approximation for 30 FPS (1000 / 30)
-                            let start = std::time::Instant::now();
-                            match encoder.encode(&yuv, pts) {
-                                Ok(frames) => {
-                                    let elapsed = start.elapsed().as_millis();
-
-                                    if frames.len() == 1 {
-                                        if frames[0].key == 1 && elapsed < TEST_TIMEOUT_MS as _ {
-                                            debug!(
-                                                "Encoder {} test passed on attempt {}",
-                                                codec.name,
-                                                attempt + 1
-                                            );
-                                            res.push(codec.clone());
-                                            passed = true;
-                                            break;
-                                        } else {
-                                            debug!(
-                                                "Encoder {} test failed on attempt {} - key: {}, timeout: {}ms",
-                                                codec.name,
-                                                attempt + 1,
-                                                frames[0].key,
-                                                elapsed
-                                            );
-                                        }
-                                    } else {
-                                        debug!(
-                                            "Encoder {} test failed on attempt {} - wrong frame count: {}",
-                                            codec.name,
-                                            attempt + 1,
-                                            frames.len()
-                                        );
-                                    }
-                                }
-                                Err(err) => {
-                                    last_err = Some(err);
-                                    debug!(
-                                        "Encoder {} test attempt {} returned error: {}",
-                                        codec.name,
-                                        attempt + 1,
-                                        err
-                                    );
-                                }
-                            }
-                        }
-
-                        if !passed {
-                            warn!(
-                                "Encoder {} validation failed after retries{}, keeping it advertised for runtime fallback",
-                                codec.name,
-                                last_err
-                                    .map(|e| format!(" (last err: {})", e))
-                                    .unwrap_or_default()
-                            );
-                            if !validation_failed
-                                .iter()
-                                .any(|existing: &CodecInfo| existing.format == codec.format)
-                            {
-                                validation_failed.push(codec.clone());
-                            }
-                        }
+                match Self::probe_encoder(&codec, &ctx, &yuv) {
+                    EncoderProbeStatus::Valid => {
+                        res.codecs.push(codec);
                     }
-                    Err(_) => {
-                        debug!("Failed to create encoder {}", codec.name);
+                    EncoderProbeStatus::TransientFailure => {
+                        res.transient_failure = true;
+                        warn!(
+                            "Encoder {} probe timed out waiting for first keyframe; not advertising until recheck",
+                            codec.name
+                        );
                     }
-                }
-            }
-
-            for codec in validation_failed {
-                if !res
-                    .iter()
-                    .any(|existing: &CodecInfo| existing.format == codec.format)
-                {
-                    warn!(
-                        "No fully validated {:?} hardware encoder was found, advertising {} because it was created successfully",
-                        codec.format,
-                        codec.name
-                    );
-                    res.push(codec);
+                    EncoderProbeStatus::HardFailure => {
+                        debug!("Encoder {} validation failed", codec.name);
+                    }
                 }
             }
         } else {
@@ -417,6 +354,87 @@ impl Encoder {
         }
 
         res
+    }
+
+    fn probe_encoder(
+        codec: &CodecInfo,
+        base_ctx: &EncodeContext,
+        yuv: &[u8],
+    ) -> EncoderProbeStatus {
+        let c = EncodeContext {
+            name: codec.name.clone(),
+            mc_name: codec.mc_name.clone(),
+            ..base_ctx.clone()
+        };
+
+        let mut encoder = match Encoder::new(c) {
+            Ok(encoder) => encoder,
+            Err(_) => {
+                debug!("Failed to create encoder {}", codec.name);
+                return EncoderProbeStatus::HardFailure;
+            }
+        };
+
+        debug!("Encoder {} created successfully", codec.name);
+        let started_at = Instant::now();
+        let mut attempt = 0;
+
+        loop {
+            let pts = attempt as i64 * PROBE_FRAME_INTERVAL_MS;
+            attempt += 1;
+            let encode_started_at = Instant::now();
+
+            match encoder.encode(yuv, pts) {
+                Ok(frames) => {
+                    let encode_elapsed = encode_started_at.elapsed().as_millis();
+                    let total_elapsed = started_at.elapsed().as_millis();
+
+                    if frames.len() == 1 && frames[0].key == 1 {
+                        if encode_elapsed >= TEST_TIMEOUT_MS as u128
+                            || total_elapsed >= TEST_TIMEOUT_MS as u128
+                        {
+                            warn!(
+                                "Encoder {} probe produced keyframe after warmup: attempt={}, encode={}ms, total={}ms",
+                                codec.name, attempt, encode_elapsed, total_elapsed
+                            );
+                        } else {
+                            debug!(
+                                "Encoder {} test passed on attempt {} in {}ms",
+                                codec.name, attempt, encode_elapsed
+                            );
+                        }
+                        return EncoderProbeStatus::Valid;
+                    }
+
+                    if frames.is_empty() {
+                        debug!(
+                            "Encoder {} probe attempt {} returned no packet yet after {}ms",
+                            codec.name, attempt, encode_elapsed
+                        );
+                    } else {
+                        debug!(
+                            "Encoder {} test failed on attempt {} - key: {}, frame count: {}",
+                            codec.name,
+                            attempt,
+                            frames[0].key,
+                            frames.len()
+                        );
+                        return EncoderProbeStatus::HardFailure;
+                    }
+                }
+                Err(err) => {
+                    debug!(
+                        "Encoder {} test attempt {} returned error: {}",
+                        codec.name, attempt, err
+                    );
+                    return EncoderProbeStatus::HardFailure;
+                }
+            }
+
+            if started_at.elapsed() >= PROBE_WARMUP_TIMEOUT {
+                return EncoderProbeStatus::TransientFailure;
+            }
+        }
     }
 
     fn dummy_yuv(ctx: EncodeContext) -> Result<Vec<u8>, ()> {
