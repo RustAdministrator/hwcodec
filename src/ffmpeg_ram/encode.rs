@@ -269,6 +269,12 @@ impl Encoder {
                     ..Default::default()
                 });
             }
+            codecs.push(CodecInfo {
+                name: "av1_vulkan".to_owned(),
+                format: AV1,
+                priority: Priority::Good as _,
+                ..Default::default()
+            });
             #[cfg(target_os = "linux")]
             {
                 codecs.push(CodecInfo {

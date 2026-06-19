@@ -145,6 +145,9 @@ public:
     if (name_.find("vaapi") != std::string::npos) {
       hw_device_type_ = AV_HWDEVICE_TYPE_VAAPI;
       hw_pixfmt_ = AV_PIX_FMT_VAAPI;
+    } else if (name_.find("_vulkan") != std::string::npos) {
+      hw_device_type_ = AV_HWDEVICE_TYPE_VULKAN;
+      hw_pixfmt_ = AV_PIX_FMT_VULKAN;
     } else if (name_.find("nvenc") != std::string::npos) {
 #ifdef _WIN32
       hw_device_type_ = AV_HWDEVICE_TYPE_D3D11VA;

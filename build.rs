@@ -521,7 +521,6 @@ mod ffmpeg {
             &["bz2", "libbz2"][..],
             &["libssl", "ssl"][..],
             &["libcrypto", "crypto"][..],
-            &["vpl"][..],
         ] {
             emit_optional_static_dependency(root, seen_search_dirs, names);
         }
@@ -761,7 +760,7 @@ mod ffmpeg {
         let mut ffmpeg_include = None;
         let mut ffmpeg_root = None;
         let mut ffmpeg_libs = None;
-        let mut mfx_link = None;
+        let mut mfx_compat_link = None;
 
         for root in local_roots() {
             let include_dir = root.join("include");
@@ -789,15 +788,15 @@ mod ffmpeg {
                 }
             }
 
-            if mfx_link.is_none() {
-                if let Some(lib) = find_library(&root, &["libmfx", "mfx"], link_mode) {
-                    mfx_link = Some(lib);
+            if mfx_compat_link.is_none() {
+                if let Some(lib) = find_library(&root, &["vpl", "libmfx", "mfx"], link_mode) {
+                    mfx_compat_link = Some(lib);
                 }
             }
         }
 
-        let (ffmpeg_include, ffmpeg_root, ffmpeg_libs, mfx_lib) =
-            match (ffmpeg_include, ffmpeg_root, ffmpeg_libs, mfx_link) {
+        let (ffmpeg_include, ffmpeg_root, ffmpeg_libs, mfx_compat_lib) =
+            match (ffmpeg_include, ffmpeg_root, ffmpeg_libs, mfx_compat_link) {
                 (Some(include), Some(root), Some(libs), Some(mfx)) => (include, root, libs, mfx),
                 _ => return false,
             };
@@ -806,13 +805,13 @@ mod ffmpeg {
             .iter()
             .any(|lib| lib.kind == LocalLinkKind::Static);
         let mut link_search_dirs = Vec::new();
-        for lib in ffmpeg_libs.iter().chain(std::iter::once(&mfx_lib)) {
+        for lib in ffmpeg_libs.iter().chain(std::iter::once(&mfx_compat_lib)) {
             emit_link_search_once(&mut link_search_dirs, &lib.lib_dir);
         }
         for lib in &ffmpeg_libs {
             emit_local_library(lib);
         }
-        emit_local_library(&mfx_lib);
+        emit_local_library(&mfx_compat_lib);
         if uses_static_ffmpeg {
             emit_static_windows_ffmpeg_deps();
             emit_static_windows_ffmpeg_private_deps(&ffmpeg_root, &mut link_search_dirs);
