@@ -26,7 +26,6 @@ pub enum Priority {
 #[derive(Debug, Eq, PartialEq, Clone, Serialize, Deserialize)]
 pub struct CodecInfo {
     pub name: String,
-    #[serde(skip)]
     pub mc_name: Option<String>,
     pub format: DataFormat,
     pub priority: i32,

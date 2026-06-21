@@ -101,7 +101,7 @@ public:
   AVFrame *frame_ = NULL;
   AVPacket *pkt_ = NULL;
   std::string name_;
-  std::string mc_name_; // for mediacodec
+  std::string mc_name_; // for mediacodec and optional hw device selection
 
   int width_ = 0;
   int height_ = 0;
@@ -175,8 +175,12 @@ public:
 
     if (hw_device_type_ != AV_HWDEVICE_TYPE_NONE) {
       std::string device = "";
+      if (name_.find("_vulkan") != std::string::npos && mc_name_.length() > 0) {
+        device = mc_name_;
+        LOG_INFO(std::string("vulkan device selector: ") + device);
+      }
 #ifdef _WIN32
-      if (name_.find("nvenc") != std::string::npos) {
+      if (device.length() == 0 && name_.find("nvenc") != std::string::npos) {
         int index = Adapters::GetFirstAdapterIndex(
             AdapterVendor::ADAPTER_VENDOR_NVIDIA);
         if (index >= 0) {
@@ -188,7 +192,9 @@ public:
                                    device.length() == 0 ? NULL : device.c_str(),
                                    NULL, 0);
       if (ret < 0) {
-        LOG_ERROR(std::string("av_hwdevice_ctx_create failed"));
+        LOG_ERROR(std::string("av_hwdevice_ctx_create failed, ret = ") +
+                  av_err2str(ret) + ", name: " + name_ +
+                  ", device: " + device);
         return false;
       }
       if (set_hwframe_ctx() != 0) {

@@ -26,6 +26,14 @@ const PROBE_WARMUP_TIMEOUT: Duration = Duration::from_secs(3);
 const PROBE_FRAME_INTERVAL_MS: i64 = 33;
 const ERR_NO_PACKET: i32 = HwcodecErrno::HWCODEC_ERR_NO_PACKET as i32;
 
+#[cfg(any(windows, target_os = "linux"))]
+const VULKAN_DEVICE_SELECTORS: [Option<&str>; 4] = [
+    None,
+    Some("vendor:0x10de"),
+    Some("vendor:0x1002"),
+    Some("vendor:0x8086"),
+];
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct EncodeContext {
     pub name: String,
@@ -60,6 +68,13 @@ enum EncoderProbeStatus {
     Valid,
     TransientFailure,
     HardFailure,
+}
+
+fn codec_label(codec: &CodecInfo) -> String {
+    match codec.mc_name.as_deref() {
+        Some(selector) if !selector.is_empty() => format!("{} ({selector})", codec.name),
+        _ => codec.name.clone(),
+    }
 }
 
 impl Display for EncodeFrame {
@@ -269,12 +284,15 @@ impl Encoder {
                     ..Default::default()
                 });
             }
-            codecs.push(CodecInfo {
-                name: "av1_vulkan".to_owned(),
-                format: AV1,
-                priority: Priority::Good as _,
-                ..Default::default()
-            });
+            for selector in VULKAN_DEVICE_SELECTORS {
+                codecs.push(CodecInfo {
+                    name: "av1_vulkan".to_owned(),
+                    mc_name: selector.map(str::to_owned),
+                    format: AV1,
+                    priority: Priority::Good as _,
+                    ..Default::default()
+                });
+            }
             #[cfg(target_os = "linux")]
             {
                 codecs.push(CodecInfo {
@@ -339,7 +357,8 @@ impl Encoder {
                     continue;
                 }
 
-                debug!("Testing encoder: {}", codec.name);
+                let label = codec_label(&codec);
+                debug!("Testing encoder: {label}");
                 match Self::probe_encoder(&codec, &ctx, &yuv) {
                     EncoderProbeStatus::Valid => {
                         res.codecs.push(codec);
@@ -347,12 +366,11 @@ impl Encoder {
                     EncoderProbeStatus::TransientFailure => {
                         res.transient_failure = true;
                         warn!(
-                            "Encoder {} probe timed out waiting for first keyframe; not advertising until recheck",
-                            codec.name
+                            "Encoder {label} probe timed out waiting for first keyframe; not advertising until recheck"
                         );
                     }
                     EncoderProbeStatus::HardFailure => {
-                        debug!("Encoder {} validation failed", codec.name);
+                        debug!("Encoder {label} validation failed");
                     }
                 }
             }
@@ -377,12 +395,12 @@ impl Encoder {
         let mut encoder = match Encoder::new(c) {
             Ok(encoder) => encoder,
             Err(_) => {
-                debug!("Failed to create encoder {}", codec.name);
+                debug!("Failed to create encoder {}", codec_label(codec));
                 return EncoderProbeStatus::HardFailure;
             }
         };
 
-        debug!("Encoder {} created successfully", codec.name);
+        debug!("Encoder {} created successfully", codec_label(codec));
         let started_at = Instant::now();
         let mut attempt = 0;
 

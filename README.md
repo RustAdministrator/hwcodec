@@ -3,6 +3,28 @@
 
 ## Codec
 
+### Software H264/H265 encoders
+
+Do not add or advertise software H264/H265 encoders such as `libx264`, `libx265`,
+or `libkvazaar` by default. Even when the local FFmpeg build exposes them, they
+have separate distribution risks from the hardware/platform encoders:
+
+* `libx264` and `libx265` are GPL-style dependencies unless a separate
+  commercial license is used. RustAdmin is AGPL, so copyleft compatibility is not
+  the blocker, but release packaging still has to preserve the correct FFmpeg and
+  encoder source/license compliance.
+* H264/AVC and H265/HEVC are patent-encumbered codecs. Shipping software
+  encoders/decoders can require patent-pool licensing depending on jurisdiction,
+  product type, distribution volume, and commercial use.
+* HEVC/H265 is especially risky because licensing is split across multiple
+  licensing programs and patent owners.
+
+Prefer platform or hardware encoders such as NVENC, AMF, QSV, VAAPI,
+VideoToolbox, MediaCodec, D3D12VA, or Vulkan where they are explicitly probed
+and confirmed. If software H264/H265 encoding is ever added for diagnostics or
+private builds, it must be opt-in, disabled in release defaults, clearly marked
+as licensing-sensitive, and advertised only after the runtime probe succeeds.
+
 ### Windows
 
 | GPU           | FFmpeg ram        | FFmpeg vram | sdk vram |
@@ -76,4 +98,3 @@ Based on the information above, there are several optimizations and changes made
   https://docs.nvidia.com/video-technologies/video-codec-sdk/11.1/read-me/index.html
 
   https://developer.nvidia.com/video-encode-and-decode-gpu-support-matrix-new?ncid=em-prod-816193
-
