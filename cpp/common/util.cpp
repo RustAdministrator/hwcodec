@@ -1,6 +1,15 @@
 extern "C" {
+#include <libavcodec/defs.h>
 #include <libavutil/opt.h>
 }
+
+#ifndef FF_PROFILE_H264_HIGH
+#define FF_PROFILE_H264_HIGH AV_PROFILE_H264_HIGH
+#endif
+
+#ifndef FF_PROFILE_HEVC_MAIN
+#define FF_PROFILE_HEVC_MAIN AV_PROFILE_HEVC_MAIN
+#endif
 
 #include "util.h"
 #include <limits>
@@ -10,18 +19,8 @@ extern "C" {
 
 #include "common.h"
 
-#include "common.h"
-
 #define LOG_MODULE "UTIL"
 #include "log.h"
-
-#ifndef FF_PROFILE_H264_HIGH
-#define FF_PROFILE_H264_HIGH AV_PROFILE_H264_HIGH
-#endif
-
-#ifndef FF_PROFILE_HEVC_MAIN
-#define FF_PROFILE_HEVC_MAIN AV_PROFILE_HEVC_MAIN
-#endif
 
 namespace util_encode {
 

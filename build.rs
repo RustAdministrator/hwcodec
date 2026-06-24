@@ -80,8 +80,7 @@ fn build_common(builder: &mut Build) {
         builder.include(&win_path);
         builder.file(win_path.join("win.cpp"));
     }
-    #[cfg(target_os = "linux")]
-    {
+    if target_os == "linux" {
         let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let externals_dir = manifest_dir.join("externals");
         // ffnvcodec
@@ -920,7 +919,48 @@ mod ffmpeg {
         {
             let mut static_libs = vec!["avcodec", "avutil", "avformat"];
             if target_os == "windows" {
-                static_libs.push("libmfx");
+                static_libs.extend([
+                    "swresample",
+                    "swscale",
+                    "vpl",
+                    "zlib",
+                    "bz2_static",
+                    "libssl",
+                    "libcrypto",
+                    "lcms2",
+                    "libwebp",
+                    "libwebpmux",
+                    "libwebpdemux",
+                    "libwebpdecoder",
+                    "libsharpyuv",
+                    "dav1d",
+                    "aom",
+                    "vpx",
+                    "libx264",
+                    "x265-static",
+                    "opus",
+                    "libmp3lame-static",
+                    "libmpghip-static",
+                    "jxl",
+                    "jxl_threads",
+                    "jxl_cms",
+                    "hwy",
+                    "hwy_contrib",
+                    "libde265",
+                    "libkvazaar",
+                    "openjp2",
+                    "jpeg-static",
+                    "libpng18_static",
+                    "deflatestatic",
+                    "lzma",
+                    "zstd_static",
+                    "brotlidec",
+                    "brotlienc",
+                    "brotlicommon",
+                    "libxml2s",
+                    "iconv",
+                    "charset",
+                ]);
             }
             static_libs
                 .iter()
@@ -940,7 +980,7 @@ mod ffmpeg {
         let dyn_libs: Vec<&str> = if target_os == "windows" {
             [
                 "User32", "bcrypt", "ole32", "oleaut32", "advapi32", "uuid", "mf", "mfplat",
-                "mfuuid", "strmiids",
+                "mfuuid", "strmiids", "ws2_32", "secur32", "ncrypt", "crypt32",
             ]
             .to_vec()
         } else if target_os == "linux" {
