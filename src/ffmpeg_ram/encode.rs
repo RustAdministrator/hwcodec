@@ -236,6 +236,15 @@ impl Encoder {
                     ..Default::default()
                 });
             }
+            #[cfg(windows)]
+            if _intel {
+                codecs.push(CodecInfo {
+                    name: "av1_qsv".to_owned(),
+                    format: AV1,
+                    priority: Priority::Best as _,
+                    ..Default::default()
+                });
+            }
             if _nv && contains(Driver::NV, H264) {
                 codecs.push(CodecInfo {
                     name: "h264_nvenc".to_owned(),
@@ -248,6 +257,14 @@ impl Encoder {
                 codecs.push(CodecInfo {
                     name: "hevc_nvenc".to_owned(),
                     format: H265,
+                    priority: Priority::Best as _,
+                    ..Default::default()
+                });
+            }
+            if _nv {
+                codecs.push(CodecInfo {
+                    name: "av1_nvenc".to_owned(),
+                    format: AV1,
                     priority: Priority::Best as _,
                     ..Default::default()
                 });
@@ -269,6 +286,14 @@ impl Encoder {
                     ..Default::default()
                 });
             }
+            if amf {
+                codecs.push(CodecInfo {
+                    name: "av1_amf".to_owned(),
+                    format: AV1,
+                    priority: Priority::Best as _,
+                    ..Default::default()
+                });
+            }
             #[cfg(target_os = "linux")]
             {
                 codecs.push(CodecInfo {
@@ -282,6 +307,12 @@ impl Encoder {
                 codecs.push(CodecInfo {
                     name: "hevc_vaapi".to_owned(),
                     format: H265,
+                    priority: Priority::Good as _,
+                    ..Default::default()
+                });
+                codecs.push(CodecInfo {
+                    name: "av1_vaapi".to_owned(),
+                    format: AV1,
                     priority: Priority::Good as _,
                     ..Default::default()
                 });
@@ -309,6 +340,12 @@ impl Encoder {
                     ..Default::default()
                 });
             }
+            codecs.push(CodecInfo {
+                name: "av1_videotoolbox".to_owned(),
+                format: AV1,
+                priority: Priority::Best as _,
+                ..Default::default()
+            });
         }
 
         // qsv doesn't support yuv420p
