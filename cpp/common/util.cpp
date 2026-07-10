@@ -116,6 +116,12 @@ bool set_quality(void *priv_data, const std::string &name, int quality) {
   if (name.find("nvenc") != std::string::npos) {
     switch (quality) {
     // p7 isn't zero lantency
+    case Quality_High:
+      if ((ret = av_opt_set(priv_data, "preset", "p5", 0)) < 0) {
+        LOG_ERROR(std::string("nvenc set opt preset p5 failed, ret = ") + av_err2str(ret));
+        return false;
+      }
+      break;
     case Quality_Medium:
       if ((ret = av_opt_set(priv_data, "preset", "p4", 0)) < 0) {
         LOG_ERROR(std::string("nvenc set opt preset p4 failed, ret = ") + av_err2str(ret));
