@@ -138,6 +138,15 @@ bool set_quality(void *priv_data, const std::string &name, int quality) {
       break;
     }
   }
+  if (name.find("videotoolbox") != std::string::npos &&
+      quality == Quality_High) {
+    // Keep realtime enabled, but let VideoToolbox favor quality over speed.
+    if ((ret = av_opt_set_int(priv_data, "prio_speed", 0, 0)) < 0) {
+      LOG_ERROR(std::string("videotoolbox set opt prio_speed 0 failed, ret = ") +
+                av_err2str(ret));
+      return false;
+    }
+  }
   if (name.find("amf") != std::string::npos) {
     switch (quality) {
     case Quality_High:
