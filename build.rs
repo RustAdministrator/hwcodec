@@ -84,11 +84,35 @@ fn build_common(builder: &mut Build) {
     {
         let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let externals_dir = manifest_dir.join("externals");
-        // ffnvcodec
-        let ffnvcodec_path = externals_dir
+        let bundled_ffnvcodec_path = externals_dir
             .join("nv-codec-headers_n12.1.14.0")
             .join("include")
             .join("ffnvcodec");
+        let mut ffnvcodec_paths = Vec::new();
+        for variable in [
+            LOCAL_CODEC_ROOT_ENV,
+            RUSTADMIN_LOCAL_CODEC_ROOT_ENV,
+            CMAKE_PREFIX_PATH_ENV,
+        ] {
+            if let Some(paths) = env::var_os(variable) {
+                for root in env::split_paths(&paths) {
+                    ffnvcodec_paths.push(root.join("include").join("ffnvcodec"));
+                    ffnvcodec_paths.push(root.join("ffnvcodec"));
+                    ffnvcodec_paths.push(root);
+                }
+            }
+        }
+        ffnvcodec_paths.push(bundled_ffnvcodec_path);
+        let ffnvcodec_path = ffnvcodec_paths
+            .into_iter()
+            .find(|path| path.join("dynlink_cuda.h").is_file())
+            .unwrap_or_else(|| {
+                panic!(
+                    "dynlink_cuda.h was not found; install nv-codec-headers or add it under <codec-root>/include/ffnvcodec"
+                )
+            });
+        println!("cargo:include={}", ffnvcodec_path.display());
+        println!("cargo:rerun-if-changed={}", ffnvcodec_path.display());
         builder.include(ffnvcodec_path);
 
         let linux_path = _platform_path.join("linux");
