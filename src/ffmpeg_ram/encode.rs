@@ -191,7 +191,11 @@ impl Encoder {
         ctx: EncodeContext,
         _sdk: Option<String>,
     ) -> AvailableEncoders {
-        if !(cfg!(windows) || cfg!(target_os = "linux") || cfg!(target_os = "macos")) {
+        if !(cfg!(windows)
+            || cfg!(target_os = "linux")
+            || cfg!(target_os = "macos")
+            || cfg!(target_os = "ios"))
+        {
             return AvailableEncoders::default();
         }
         let mut codecs: Vec<CodecInfo> = vec![];
@@ -343,6 +347,21 @@ impl Encoder {
             codecs.push(CodecInfo {
                 name: "av1_videotoolbox".to_owned(),
                 format: AV1,
+                priority: Priority::Best as _,
+                ..Default::default()
+            });
+        }
+        #[cfg(target_os = "ios")]
+        {
+            codecs.push(CodecInfo {
+                name: "h264_videotoolbox".to_owned(),
+                format: H264,
+                priority: Priority::Best as _,
+                ..Default::default()
+            });
+            codecs.push(CodecInfo {
+                name: "hevc_videotoolbox".to_owned(),
+                format: H265,
                 priority: Priority::Best as _,
                 ..Default::default()
             });

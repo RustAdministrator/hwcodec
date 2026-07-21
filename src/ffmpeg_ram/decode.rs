@@ -1,4 +1,9 @@
-#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+#[cfg(any(
+    target_os = "windows",
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "ios"
+))]
 use super::Priority;
 use crate::common::TEST_TIMEOUT_MS;
 use crate::ffmpeg::{init_av_log, AVHWDeviceType::*};
@@ -271,6 +276,30 @@ impl Decoder {
                     ..Default::default()
                 });
             }
+            codecs.push(CodecInfo {
+                name: "av1".to_owned(),
+                format: AV1,
+                hwdevice: AV_HWDEVICE_TYPE_VIDEOTOOLBOX,
+                priority: Priority::Best as _,
+                ..Default::default()
+            });
+        }
+        #[cfg(target_os = "ios")]
+        {
+            codecs.push(CodecInfo {
+                name: "h264".to_owned(),
+                format: H264,
+                hwdevice: AV_HWDEVICE_TYPE_VIDEOTOOLBOX,
+                priority: Priority::Best as _,
+                ..Default::default()
+            });
+            codecs.push(CodecInfo {
+                name: "hevc".to_owned(),
+                format: H265,
+                hwdevice: AV_HWDEVICE_TYPE_VIDEOTOOLBOX,
+                priority: Priority::Best as _,
+                ..Default::default()
+            });
             codecs.push(CodecInfo {
                 name: "av1".to_owned(),
                 format: AV1,
