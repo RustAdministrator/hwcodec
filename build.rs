@@ -18,6 +18,7 @@ const RUSTADMIN_LOCAL_CODEC_ROOT_ENV: &str = "RUSTADMIN_LINUX_CODEC_ROOT";
 const RUSTADMIN_LOCAL_CODEC_ROOT_ENV: &str = "RUSTADMIN_MACOS_CODEC_ROOT";
 const CMAKE_PREFIX_PATH_ENV: &str = "CMAKE_PREFIX_PATH";
 const IOS_CODEC_ROOT_ENV: &str = "RUSTDESK_IOS_CODEC_ROOT";
+const ANDROID_CODEC_ROOT_ENV: &str = "RUSTADMIN_ANDROID_NATIVE_ROOT";
 #[cfg(windows)]
 const LOCAL_CODEC_LINK_MODE_ENV: &str = "RUSTDESK_WINDOWS_CODEC_LINK_MODE";
 #[cfg(target_os = "linux")]
@@ -82,7 +83,7 @@ fn build_common(builder: &mut Build) {
         builder.file(win_path.join("win.cpp"));
     }
     #[cfg(target_os = "linux")]
-    {
+    if target_os == "linux" {
         let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let externals_dir = manifest_dir.join("externals");
         let bundled_ffnvcodec_path = externals_dir
@@ -214,6 +215,7 @@ mod ffmpeg {
         println!("cargo:rerun-if-env-changed={RUSTADMIN_LOCAL_CODEC_ROOT_ENV}");
         println!("cargo:rerun-if-env-changed={CMAKE_PREFIX_PATH_ENV}");
         println!("cargo:rerun-if-env-changed={IOS_CODEC_ROOT_ENV}");
+        println!("cargo:rerun-if-env-changed={ANDROID_CODEC_ROOT_ENV}");
         println!("cargo:rerun-if-env-changed={LOCAL_CODEC_LINK_MODE_ENV}");
         println!("cargo:rerun-if-env-changed={RUSTADMIN_LOCAL_CODEC_LINK_MODE_ENV}");
 
@@ -223,11 +225,17 @@ mod ffmpeg {
                 push_prefix_candidate(&mut roots, PathBuf::from(path));
             }
         }
-        if let Some(path) = env::var_os(LOCAL_CODEC_ROOT_ENV) {
-            push_prefix_candidate(&mut roots, PathBuf::from(path));
-        }
-        if let Some(path) = env::var_os(RUSTADMIN_LOCAL_CODEC_ROOT_ENV) {
-            push_prefix_candidate(&mut roots, PathBuf::from(path));
+        if cargo_target_os == "android" {
+            if let Some(path) = env::var_os(ANDROID_CODEC_ROOT_ENV) {
+                push_prefix_candidate(&mut roots, PathBuf::from(path));
+            }
+        } else {
+            if let Some(path) = env::var_os(LOCAL_CODEC_ROOT_ENV) {
+                push_prefix_candidate(&mut roots, PathBuf::from(path));
+            }
+            if let Some(path) = env::var_os(RUSTADMIN_LOCAL_CODEC_ROOT_ENV) {
+                push_prefix_candidate(&mut roots, PathBuf::from(path));
+            }
         }
         if let Some(paths) = env::var_os(CMAKE_PREFIX_PATH_ENV) {
             for path in env::split_paths(&paths) {
@@ -597,6 +605,9 @@ mod ffmpeg {
     fn run_pkg_config(root: Option<&Path>, args: &[&str]) -> Option<String> {
         let mut command = std::process::Command::new("pkg-config");
         prepend_pkg_config_dirs(root, &mut command);
+        if root.is_some() && env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("android") {
+            command.env_remove("PKG_CONFIG_SYSROOT_DIR");
+        }
         command.args(args).args(FFMPEG_PC_PACKAGES);
 
         let output = command.output().ok()?;
@@ -681,7 +692,9 @@ mod ffmpeg {
                 }
             } else if token == "-pthread" {
                 #[cfg(target_os = "linux")]
-                println!("cargo:rustc-link-lib=pthread");
+                if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("android") {
+                    println!("cargo:rustc-link-lib=pthread");
+                }
             } else if token.ends_with(".a") {
                 if !emit_library_path(Path::new(token), true) {
                     println!("cargo:rustc-link-arg={token}");
@@ -886,7 +899,15 @@ mod ffmpeg {
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         {
             let cargo_target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap();
-            if cargo_target_os == "linux" || cargo_target_os == "macos" || cargo_target_os == "ios"
+            if cargo_target_os == "android" {
+                if !link_local_unix(builder) {
+                    panic!(
+                        "Android FFmpeg was not found. Set {ANDROID_CODEC_ROOT_ENV} or {CMAKE_PREFIX_PATH_ENV} to an Android prefix containing FFmpeg headers, static libraries, and pkg-config metadata."
+                    );
+                }
+            } else if cargo_target_os == "linux"
+                || cargo_target_os == "macos"
+                || cargo_target_os == "ios"
             {
                 if !link_local_unix(builder)
                     && !link_pkg_config_ffmpeg(
