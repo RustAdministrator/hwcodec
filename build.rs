@@ -963,7 +963,7 @@ mod ffmpeg {
                 format!("{}-{}", target_arch, target_os)
             }
         } else if target_os == "windows" {
-            "x64-windows-static".to_owned()
+            format!("{}-windows-static", target_arch)
         } else {
             format!("{}-{}", target_arch, target_os)
         };
@@ -983,7 +983,8 @@ mod ffmpeg {
         );
         {
             let mut static_libs = vec!["avcodec", "avutil", "avformat"];
-            if target_os == "windows" {
+            // Intel Quick Sync is unavailable in the Windows ARM64 FFmpeg build.
+            if target_os == "windows" && (target_arch == "x64" || target_arch == "x86") {
                 static_libs.push("libmfx");
             }
             static_libs
