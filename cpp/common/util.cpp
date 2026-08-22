@@ -1,4 +1,5 @@
 extern "C" {
+#include <libavutil/error.h>
 #include <libavutil/opt.h>
 }
 
@@ -24,6 +25,38 @@ extern "C" {
 #endif
 
 namespace util_encode {
+
+namespace {
+
+bool set_optional_string_option(void *priv_data, const std::string &codec,
+                                const char *option, const char *value) {
+  if (!priv_data) {
+    LOG_ERROR(codec + " optional option " + option +
+              " failed: codec private data is null");
+    return false;
+  }
+
+  if (!av_opt_find(priv_data, option, NULL, 0, 0)) {
+    LOG_WARN(codec + " optional option " + option +
+             " is unavailable; continuing with encoder defaults");
+    return true;
+  }
+
+  const int ret = av_opt_set(priv_data, option, value, 0);
+  if (ret == AVERROR_OPTION_NOT_FOUND) {
+    LOG_WARN(codec + " optional option " + option +
+             " disappeared before apply; continuing with encoder defaults");
+    return true;
+  }
+  if (ret < 0) {
+    LOG_ERROR(codec + " optional option " + option + " failed, ret = " +
+              av_err2str(ret));
+    return false;
+  }
+  return true;
+}
+
+} // namespace
 
 void set_av_codec_ctx(AVCodecContext *c, const std::string &name, int kbs,
                       int gop, int fps) {
@@ -80,8 +113,8 @@ bool set_lantency_free(void *priv_data, const std::string &name) {
     }
   }
   if (name.find("amf") != std::string::npos) {
-    if ((ret = av_opt_set(priv_data, "query_timeout", "1000", 0)) < 0) {
-      LOG_ERROR(std::string("amf set_lantency_free failed, ret = ") + av_err2str(ret));
+    if (!set_optional_string_option(priv_data, "amf", "query_timeout",
+                                    "1000")) {
       return false;
     }
   }
