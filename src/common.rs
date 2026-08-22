@@ -7,6 +7,7 @@ include!(concat!(env!("OUT_DIR"), "/common_ffi.rs"));
 
 pub(crate) const DATA_H264_720P: &[u8] = include_bytes!("res/720p.h264");
 pub(crate) const DATA_H265_720P: &[u8] = include_bytes!("res/720p.h265");
+pub(crate) const DATA_AV1_720P: &[u8] = include_bytes!("res/720p.av1");
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub enum Driver {
