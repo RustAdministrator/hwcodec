@@ -232,6 +232,16 @@ public:
         hw_pixfmt_ != AV_PIX_FMT_NONE ? hw_pixfmt_ : (AVPixelFormat)pixfmt_;
     c_->sw_pix_fmt = (AVPixelFormat)pixfmt_;
     util_encode::set_av_codec_ctx(c_, name_, kbs_, gop_, fps_);
+    if (util_encode::is_software_encoder(name_)) {
+      int software_threads = thread_count_;
+      if (software_threads < 1)
+        software_threads = 1;
+      if (software_threads > 4)
+        software_threads = 4;
+      c_->flags &= ~AV_CODEC_FLAG_GLOBAL_HEADER;
+      c_->thread_type = FF_THREAD_SLICE;
+      c_->thread_count = software_threads;
+    }
     if (!util_encode::set_lantency_free(c_->priv_data, name_)) {
       LOG_ERROR(std::string("set_lantency_free failed, name: ") + name_);
       return false;

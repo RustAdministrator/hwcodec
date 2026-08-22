@@ -367,6 +367,22 @@ impl Encoder {
             });
         }
 
+        #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
+        {
+            codecs.push(CodecInfo {
+                name: "libx264".to_owned(),
+                format: H264,
+                priority: Priority::Soft as _,
+                ..Default::default()
+            });
+            codecs.push(CodecInfo {
+                name: "libx265".to_owned(),
+                format: H265,
+                priority: Priority::Soft as _,
+                ..Default::default()
+            });
+        }
+
         // qsv doesn't support yuv420p
         codecs.retain(|c| {
             let ctx = ctx.clone();
@@ -378,7 +394,7 @@ impl Encoder {
 
         let mut res = AvailableEncoders::default();
 
-        if let Ok(yuv) = Encoder::dummy_yuv(ctx.clone()) {
+        if Encoder::dummy_yuv(ctx.clone()).is_ok() {
             for codec in codecs {
                 // Skip if this format already exists in results
                 if res
@@ -390,7 +406,7 @@ impl Encoder {
                 }
 
                 debug!("Testing encoder: {}", codec.name);
-                match Self::probe_encoder(&codec, &ctx, &yuv) {
+                match Self::probe_encoder(&codec, &ctx) {
                     EncoderProbeStatus::Valid => {
                         res.codecs.push(codec);
                     }
@@ -413,15 +429,18 @@ impl Encoder {
         res
     }
 
-    fn probe_encoder(
-        codec: &CodecInfo,
-        base_ctx: &EncodeContext,
-        yuv: &[u8],
-    ) -> EncoderProbeStatus {
-        let c = EncodeContext {
+    fn probe_encoder(codec: &CodecInfo, base_ctx: &EncodeContext) -> EncoderProbeStatus {
+        let mut c = EncodeContext {
             name: codec.name.clone(),
             mc_name: codec.mc_name.clone(),
             ..base_ctx.clone()
+        };
+        if codec.name == "libx265" {
+            c.pixfmt = AVPixelFormat::AV_PIX_FMT_YUV420P;
+        }
+        let yuv = match Encoder::dummy_yuv(c.clone()) {
+            Ok(yuv) => yuv,
+            Err(_) => return EncoderProbeStatus::HardFailure,
         };
 
         let mut encoder = match Encoder::new(c) {
@@ -441,7 +460,7 @@ impl Encoder {
             attempt += 1;
             let encode_started_at = Instant::now();
 
-            match encoder.encode(yuv, pts) {
+            match encoder.encode(&yuv, pts) {
                 Ok(frames) => {
                     let encode_elapsed = encode_started_at.elapsed().as_millis();
                     let total_elapsed = started_at.elapsed().as_millis();

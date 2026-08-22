@@ -46,6 +46,14 @@ impl Default for CodecInfo {
 }
 
 impl CodecInfo {
+    pub fn is_software_encoder_name(name: &str) -> bool {
+        matches!(name, "libx264" | "libx265")
+    }
+
+    pub fn is_software_encoder(&self) -> bool {
+        Self::is_software_encoder_name(&self.name)
+    }
+
     pub fn prioritized(coders: Vec<CodecInfo>) -> CodecInfos {
         let mut h264: Option<CodecInfo> = None;
         let mut h265: Option<CodecInfo> = None;
@@ -126,6 +134,19 @@ impl CodecInfo {
             vp9: None,
             av1: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::CodecInfo;
+
+    #[test]
+    fn software_encoder_names_are_explicit() {
+        assert!(CodecInfo::is_software_encoder_name("libx264"));
+        assert!(CodecInfo::is_software_encoder_name("libx265"));
+        assert!(!CodecInfo::is_software_encoder_name("h264_amf"));
+        assert!(!CodecInfo::is_software_encoder_name("hevc_nvenc"));
     }
 }
 
