@@ -21,7 +21,7 @@ void *ffmpeg_ram_new_encoder(const char *name, const char *mc_name, int width,
 void *ffmpeg_ram_new_decoder(const char *name, int device_type,
                              int thread_count, RamDecodeCallback callback);
 int ffmpeg_ram_encode(void *encoder, const uint8_t *data, int length,
-                      const void *obj, int64_t ms);
+                      const void *obj, int64_t ms, int force_keyframe);
 int ffmpeg_ram_decode(void *decoder, const uint8_t *data, int length,
                       const void *obj);
 void ffmpeg_ram_free_encoder(void *encoder);

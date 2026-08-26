@@ -115,6 +115,8 @@ public:
   int gop_ = 0xFFFF;
   int thread_count_ = 1;
   int gpu_ = 0;
+  uint64_t requested_keyframes_ = 0;
+  uint64_t unsolicited_keyframes_ = 0;
   RamEncodeCallback callback_ = NULL;
   int offset_[AV_NUM_DATA_POINTERS] = {0};
 
@@ -232,16 +234,6 @@ public:
         hw_pixfmt_ != AV_PIX_FMT_NONE ? hw_pixfmt_ : (AVPixelFormat)pixfmt_;
     c_->sw_pix_fmt = (AVPixelFormat)pixfmt_;
     util_encode::set_av_codec_ctx(c_, name_, kbs_, gop_, fps_);
-    if (util_encode::is_software_encoder(name_)) {
-      int software_threads = thread_count_;
-      if (software_threads < 1)
-        software_threads = 1;
-      if (software_threads > 4)
-        software_threads = 4;
-      c_->flags &= ~AV_CODEC_FLAG_GLOBAL_HEADER;
-      c_->thread_type = FF_THREAD_SLICE;
-      c_->thread_count = software_threads;
-    }
     if (!util_encode::set_lantency_free(c_->priv_data, name_)) {
       LOG_ERROR(std::string("set_lantency_free failed, name: ") + name_);
       return false;
@@ -270,6 +262,19 @@ public:
                 ", name: " + name_);
       return false;
     }
+    if (name_.find("nvenc") != std::string::npos) {
+      int64_t lookahead = -1;
+      int64_t no_scenecut = -1;
+      int64_t forced_idr = -1;
+      av_opt_get_int(c_->priv_data, "rc-lookahead", 0, &lookahead);
+      av_opt_get_int(c_->priv_data, "no-scenecut", 0, &no_scenecut);
+      av_opt_get_int(c_->priv_data, "forced-idr", 0, &forced_idr);
+      LOG_INFO(std::string("nvenc runtime keyframe policy: name=") + name_ +
+               ", gop=" + std::to_string(c_->gop_size) +
+               ", lookahead=" + std::to_string(lookahead) +
+               ", no_scenecut=" + std::to_string(no_scenecut) +
+               ", forced_idr=" + std::to_string(forced_idr));
+    }
 
     if (ffmpeg_ram_get_linesize_offset_length(pixfmt_, width_, height_, align_,
                                               NULL, offset_, length) != 0)
@@ -282,7 +287,8 @@ public:
     return true;
   }
 
-  int encode(const uint8_t *data, int length, const void *obj, uint64_t ms) {
+  int encode(const uint8_t *data, int length, const void *obj, uint64_t ms,
+             bool force_keyframe) {
     int ret;
 
     if ((ret = av_frame_make_writable(frame_)) != 0) {
@@ -302,7 +308,7 @@ public:
       tmp_frame = frame_;
     }
 
-    return do_encode(tmp_frame, obj, ms);
+    return do_encode(tmp_frame, obj, ms, force_keyframe);
   }
 
   void free_encoder() {
@@ -319,7 +325,10 @@ public:
   }
 
   int set_bitrate(int kbs) {
-    return util_encode::change_bit_rate(c_, name_, kbs) ? 0 : -1;
+    if (!util_encode::change_bit_rate(c_, name_, kbs))
+      return -1;
+    kbs_ = kbs;
+    return 0;
   }
 
 private:
@@ -351,10 +360,12 @@ private:
     return err;
   }
 
-  int do_encode(AVFrame *frame, const void *obj, int64_t ms) {
+  int do_encode(AVFrame *frame, const void *obj, int64_t ms,
+                bool force_keyframe) {
     int ret;
     bool encoded = false;
     frame->pts = ms;
+    frame->pict_type = force_keyframe ? AV_PICTURE_TYPE_I : AV_PICTURE_TYPE_NONE;
     if ((ret = avcodec_send_frame(c_, frame)) < 0) {
       LOG_ERROR(std::string("avcodec_send_frame failed, ret = ") + av_err2str(ret));
       return ret;
@@ -375,8 +386,22 @@ private:
         goto _exit;
       }
       encoded = true;
-      callback_(pkt_->data, pkt_->size, pkt_->pts,
-                pkt_->flags & AV_PKT_FLAG_KEY, obj);
+      const bool keyframe = (pkt_->flags & AV_PKT_FLAG_KEY) != 0;
+      if (keyframe && name_.find("nvenc") != std::string::npos) {
+        if (force_keyframe) {
+          ++requested_keyframes_;
+        } else {
+          ++unsolicited_keyframes_;
+        }
+        LOG_INFO(std::string("nvenc keyframe output: name=") + name_ +
+                 ", origin=" + (force_keyframe ? "requested" : "unsolicited") +
+                 ", bytes=" + std::to_string(pkt_->size) +
+                 ", pts=" + std::to_string(pkt_->pts) +
+                 ", bitrate_kbps=" + std::to_string(kbs_) +
+                 ", requested_total=" + std::to_string(requested_keyframes_) +
+                 ", unsolicited_total=" + std::to_string(unsolicited_keyframes_));
+      }
+      callback_(pkt_->data, pkt_->size, pkt_->pts, keyframe, obj);
       av_packet_unref(pkt_);
     }
   _exit:
@@ -453,9 +478,10 @@ ffmpeg_ram_new_encoder(const char *name, const char *mc_name, int width,
 }
 
 extern "C" int ffmpeg_ram_encode(FFmpegRamEncoder *encoder, const uint8_t *data,
-                                 int length, const void *obj, uint64_t ms) {
+                                 int length, const void *obj, uint64_t ms,
+                                 int force_keyframe) {
   try {
-    return encoder->encode(data, length, obj, ms);
+    return encoder->encode(data, length, obj, ms, force_keyframe != 0);
   } catch (const std::exception &e) {
     LOG_ERROR(std::string("ffmpeg_ram_encode failed, ") + std::string(e.what()));
   }

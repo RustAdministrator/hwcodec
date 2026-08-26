@@ -131,7 +131,12 @@ impl Encoder {
         }
     }
 
-    pub fn encode(&mut self, data: &[u8], ms: i64) -> Result<&mut Vec<EncodeFrame>, i32> {
+    pub fn encode(
+        &mut self,
+        data: &[u8],
+        ms: i64,
+        force_keyframe: bool,
+    ) -> Result<&mut Vec<EncodeFrame>, i32> {
         unsafe {
             (&mut *self.frames).clear();
             let result = ffmpeg_ram_encode(
@@ -140,6 +145,7 @@ impl Encoder {
                 data.len() as _,
                 self.frames as *const _ as *const c_void,
                 ms,
+                i32::from(force_keyframe),
             );
             if result != 0 {
                 return Err(result);
@@ -367,24 +373,18 @@ impl Encoder {
             });
         }
 
-        #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
-        {
-            codecs.push(CodecInfo {
-                name: "libx264".to_owned(),
-                format: H264,
-                priority: Priority::Soft as _,
-                ..Default::default()
-            });
-            codecs.push(CodecInfo {
-                name: "libx265".to_owned(),
-                format: H265,
-                priority: Priority::Soft as _,
-                ..Default::default()
-            });
-        }
-
-        // qsv doesn't support yuv420p
+        // H.264/H.265 encoding is deliberately hardware/platform-only in
+        // distributed builds. Keep this final allow-list even though the
+        // current candidates are hardware-backed, so a future FFmpeg software
+        // wrapper cannot become advertised merely by being added above.
         codecs.retain(|c| {
+            if !c.is_hardware_encoder() {
+                warn!(
+                    "Rejecting non-hardware encoder candidate by distribution policy: {}",
+                    c.name
+                );
+                return false;
+            }
             let ctx = ctx.clone();
             if ctx.pixfmt == AVPixelFormat::AV_PIX_FMT_YUV420P && c.name.contains("qsv") {
                 return false;
@@ -430,14 +430,11 @@ impl Encoder {
     }
 
     fn probe_encoder(codec: &CodecInfo, base_ctx: &EncodeContext) -> EncoderProbeStatus {
-        let mut c = EncodeContext {
+        let c = EncodeContext {
             name: codec.name.clone(),
             mc_name: codec.mc_name.clone(),
             ..base_ctx.clone()
         };
-        if codec.name == "libx265" {
-            c.pixfmt = AVPixelFormat::AV_PIX_FMT_YUV420P;
-        }
         let yuv = match Encoder::dummy_yuv(c.clone()) {
             Ok(yuv) => yuv,
             Err(_) => return EncoderProbeStatus::HardFailure,
@@ -460,7 +457,7 @@ impl Encoder {
             attempt += 1;
             let encode_started_at = Instant::now();
 
-            match encoder.encode(&yuv, pts) {
+            match encoder.encode(&yuv, pts, false) {
                 Ok(frames) => {
                     let encode_elapsed = encode_started_at.elapsed().as_millis();
                     let total_elapsed = started_at.elapsed().as_millis();
