@@ -26,20 +26,12 @@ namespace util_encode {
 
 namespace {
 
-bool is_x264(const std::string &name) {
-  return name.find("libx264") != std::string::npos;
-}
-
-bool is_x265(const std::string &name) {
-  return name.find("libx265") != std::string::npos;
-}
-
 bool is_h264(const std::string &name) {
-  return name.find("h264") != std::string::npos || is_x264(name);
+  return name.find("h264") != std::string::npos;
 }
 
 bool is_h265(const std::string &name) {
-  return name.find("hevc") != std::string::npos || is_x265(name);
+  return name.find("hevc") != std::string::npos;
 }
 
 bool set_optional_string_option(void *priv_data, const std::string &codec,
@@ -71,10 +63,6 @@ bool set_optional_string_option(void *priv_data, const std::string &codec,
 }
 
 } // namespace
-
-bool is_software_encoder(const std::string &name) {
-  return is_x264(name) || is_x265(name);
-}
 
 void set_av_codec_ctx(AVCodecContext *c, const std::string &name, int kbs,
                       int gop, int fps) {
@@ -155,26 +143,6 @@ bool set_lantency_free(void *priv_data, const std::string &name) {
     }
     if ((ret = av_opt_set_int(priv_data, "prio_speed", 1, 0)) < 0) {
       LOG_ERROR(std::string("videotoolbox set prio_speed failed, ret = ") + av_err2str(ret));
-      return false;
-    }
-  }
-  if (is_x264(name)) {
-    if ((ret = av_opt_set(priv_data, "preset", "veryfast", 0)) < 0 ||
-        (ret = av_opt_set(priv_data, "tune", "zerolatency", 0)) < 0 ||
-        (ret = av_opt_set(priv_data, "x264-params",
-                          "repeat-headers=1:scenecut=0", 0)) < 0) {
-      LOG_ERROR(std::string("libx264 low-latency options failed, ret = ") +
-                av_err2str(ret));
-      return false;
-    }
-  }
-  if (is_x265(name)) {
-    if ((ret = av_opt_set(priv_data, "preset", "ultrafast", 0)) < 0 ||
-        (ret = av_opt_set(priv_data, "tune", "zerolatency", 0)) < 0 ||
-        (ret = av_opt_set(priv_data, "x265-params", "repeat-headers=1", 0)) <
-            0) {
-      LOG_ERROR(std::string("libx265 low-latency options failed, ret = ") +
-                av_err2str(ret));
       return false;
     }
   }
@@ -370,6 +338,19 @@ bool force_hw(void *priv_data, const std::string &name) {
 
 bool set_others(void *priv_data, const std::string &name) {
   int ret;
+  if (name.find("nvenc") != std::string::npos) {
+    if (!set_optional_string_option(priv_data, "nvenc", "rc-lookahead", "0") ||
+        !set_optional_string_option(priv_data, "nvenc", "no-scenecut", "1")) {
+      return false;
+    }
+    if ((ret = av_opt_set_int(priv_data, "forced-idr", 1, 0)) < 0) {
+      LOG_ERROR(std::string("nvenc set forced-idr failed, ret = ") +
+                av_err2str(ret));
+      return false;
+    }
+    LOG_INFO(std::string("nvenc keyframe policy configured: lookahead=0, no-scenecut=1, forced-idr=1, name: ") +
+             name);
+  }
   if (name.find("_mf") != std::string::npos) {
     // ff_eAVScenarioInfo_DisplayRemoting = 1
     if ((ret = av_opt_set_int(priv_data, "scenario", 1, 0)) < 0) {
@@ -389,9 +370,6 @@ bool set_others(void *priv_data, const std::string &name) {
 }
 
 bool change_bit_rate(AVCodecContext *c, const std::string &name, int kbs) {
-  if (is_software_encoder(name)) {
-    return false;
-  }
   if (kbs > 0) {
     c->bit_rate = kbs * 1000;
     if (name.find("qsv") != std::string::npos) {

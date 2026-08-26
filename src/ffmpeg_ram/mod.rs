@@ -46,8 +46,30 @@ impl Default for CodecInfo {
 }
 
 impl CodecInfo {
+    /// Distributed H.26x encoders must be supplied by a reviewed hardware or
+    /// platform backend. Keep this as a fail-closed allow-list: do not add
+    /// libx264, libx265, libopenh264, or another CPU H.26x encoder. Software
+    /// encoding fallback belongs to the AV1/VP9/VP8 paths in RustAdmin.
+    pub fn is_hardware_encoder_name(name: &str) -> bool {
+        [
+            "_nvenc",
+            "_amf",
+            "_qsv",
+            "_vaapi",
+            "_videotoolbox",
+            "_mediacodec",
+            "_mf",
+        ]
+        .iter()
+        .any(|suffix| name.ends_with(suffix))
+    }
+
     pub fn is_software_encoder_name(name: &str) -> bool {
-        matches!(name, "libx264" | "libx265")
+        !Self::is_hardware_encoder_name(name)
+    }
+
+    pub fn is_hardware_encoder(&self) -> bool {
+        Self::is_hardware_encoder_name(&self.name)
     }
 
     pub fn is_software_encoder(&self) -> bool {
@@ -142,11 +164,31 @@ mod tests {
     use super::CodecInfo;
 
     #[test]
-    fn software_encoder_names_are_explicit() {
+    fn hardware_encoder_allow_list_is_fail_closed() {
+        for name in [
+            "h264_nvenc",
+            "hevc_amf",
+            "av1_qsv",
+            "h264_vaapi",
+            "hevc_videotoolbox",
+            "h264_mediacodec",
+            "h264_mf",
+        ] {
+            assert!(CodecInfo::is_hardware_encoder_name(name), "{name}");
+            assert!(!CodecInfo::is_software_encoder_name(name), "{name}");
+            assert!(CodecInfo {
+                name: name.to_owned(),
+                ..Default::default()
+            }
+            .is_hardware_encoder());
+        }
+
         assert!(CodecInfo::is_software_encoder_name("libx264"));
         assert!(CodecInfo::is_software_encoder_name("libx265"));
-        assert!(!CodecInfo::is_software_encoder_name("h264_amf"));
-        assert!(!CodecInfo::is_software_encoder_name("hevc_nvenc"));
+        assert!(CodecInfo::is_software_encoder_name("libopenh264"));
+        assert!(CodecInfo::is_software_encoder_name("h264"));
+        assert!(CodecInfo::is_software_encoder_name("hevc"));
+        assert!(CodecInfo::is_software_encoder_name("future_h26x_backend"));
     }
 }
 

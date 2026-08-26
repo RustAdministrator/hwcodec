@@ -561,8 +561,10 @@ mod ffmpeg {
             &["libwebpdecoder", "webpdecoder"][..],
             &["libwebp", "webp"][..],
             &["libsharpyuv", "sharpyuv"][..],
-            &["libx264", "x264"][..],
-            &["x265-static", "x265"][..],
+            // Distributed RustAdmin builds intentionally exclude software
+            // H.264/H.265 encoders. Do not restore x264/x265 private link
+            // dependencies; use hardware/platform H.26x and AV1/VP9/VP8
+            // software fallback instead.
             &["libxml2s", "xml2"][..],
             &["iconv"][..],
             &["charset"][..],
@@ -812,12 +814,15 @@ mod ffmpeg {
     #[cfg(windows)]
     fn link_local_windows(builder: &mut Build) -> bool {
         let link_mode = local_link_mode();
+        let roots = local_roots();
+        let required_ffmpeg_root = env::var_os(LOCAL_CODEC_ROOT_ENV).map(PathBuf::from);
         let mut ffmpeg_include = None;
         let mut ffmpeg_root = None;
         let mut ffmpeg_libs = None;
+        let mut zlib_link = None;
         let mut mfx_compat_link = None;
 
-        for root in local_roots() {
+        for root in &roots {
             let include_dir = root.join("include");
             let avcodec_header = include_dir.join("libavcodec").join("avcodec.h");
             let avformat_header = include_dir.join("libavformat").join("avformat.h");
@@ -827,22 +832,24 @@ mod ffmpeg {
                 && avformat_header.exists()
                 && avutil_header.exists()
             {
-                if let (Some(avcodec), Some(avformat), Some(avutil), Some(swresample), Some(zlib)) = (
+                if let (Some(avcodec), Some(avformat), Some(avutil), Some(swresample)) = (
                     find_library(&root, &["avcodec"], link_mode),
                     find_library(&root, &["avformat"], link_mode),
                     find_library(&root, &["avutil"], link_mode),
                     find_library(&root, &["swresample"], link_mode),
-                    find_library(&root, &["zlib", "zlibstatic", "libz", "z"], link_mode),
                 ) {
                     emit_rerun_if_changed(&avcodec_header);
                     emit_rerun_if_changed(&avformat_header);
                     emit_rerun_if_changed(&avutil_header);
                     ffmpeg_include = Some(include_dir);
                     ffmpeg_root = Some(root.clone());
-                    ffmpeg_libs = Some(vec![avcodec, avutil, avformat, swresample, zlib]);
+                    ffmpeg_libs = Some(vec![avcodec, avutil, avformat, swresample]);
                 }
             }
 
+            if zlib_link.is_none() {
+                zlib_link = find_library(&root, &["zlib", "zlibstatic", "libz", "z"], link_mode);
+            }
             if mfx_compat_link.is_none() {
                 if let Some(lib) = find_library(&root, &["vpl", "libmfx", "mfx"], link_mode) {
                     mfx_compat_link = Some(lib);
@@ -850,22 +857,54 @@ mod ffmpeg {
             }
         }
 
-        let (ffmpeg_include, ffmpeg_root, ffmpeg_libs, mfx_compat_lib) =
-            match (ffmpeg_include, ffmpeg_root, ffmpeg_libs, mfx_compat_link) {
-                (Some(include), Some(root), Some(libs), Some(mfx)) => (include, root, libs, mfx),
-                _ => return false,
-            };
+        let (ffmpeg_include, ffmpeg_root, ffmpeg_libs, zlib_lib, mfx_compat_lib) = match (
+            ffmpeg_include,
+            ffmpeg_root,
+            ffmpeg_libs,
+            zlib_link,
+            mfx_compat_link,
+        ) {
+            (Some(include), Some(root), Some(libs), Some(zlib), Some(mfx)) => {
+                (include, root, libs, zlib, mfx)
+            }
+            _ => {
+                if let Some(required) = &required_ffmpeg_root {
+                    panic!(
+                        "Required Windows FFmpeg prefix '{}' could not be linked with zlib and oneVPL from the configured dependency roots",
+                        required.display()
+                    );
+                }
+                return false;
+            }
+        };
+
+        // RUSTDESK_WINDOWS_CODEC_ROOT is the explicitly selected FFmpeg
+        // prefix. Never fall through to an older FFmpeg from CMAKE_PREFIX_PATH
+        // merely because zlib or oneVPL live in a separate dependency prefix.
+        if required_ffmpeg_root
+            .as_ref()
+            .is_some_and(|required| required != &ffmpeg_root)
+        {
+            panic!(
+                "Required Windows FFmpeg prefix '{}' was not selected; refusing fallback to '{}'",
+                required_ffmpeg_root
+                    .as_ref()
+                    .map_or_else(String::new, |root| root.display().to_string()),
+                ffmpeg_root.display()
+            );
+        }
 
         let uses_static_ffmpeg = ffmpeg_libs
             .iter()
             .any(|lib| lib.kind == LocalLinkKind::Static);
         let mut link_search_dirs = Vec::new();
-        for lib in ffmpeg_libs.iter().chain(std::iter::once(&mfx_compat_lib)) {
+        for lib in ffmpeg_libs.iter().chain([&zlib_lib, &mfx_compat_lib]) {
             emit_link_search_once(&mut link_search_dirs, &lib.lib_dir);
         }
         for lib in &ffmpeg_libs {
             emit_local_library(lib);
         }
+        emit_local_library(&zlib_lib);
         emit_local_library(&mfx_compat_lib);
         if uses_static_ffmpeg {
             emit_static_windows_ffmpeg_deps();
