@@ -1,19 +1,7 @@
 extern "C" {
+#include <libavutil/error.h>
 #include <libavutil/opt.h>
 }
-
-#include "util.h"
-#include <limits>
-#include <map>
-#include <string.h>
-#include <vector>
-
-#include "common.h"
-
-#include "common.h"
-
-#define LOG_MODULE "UTIL"
-#include "log.h"
 
 #ifndef FF_PROFILE_H264_HIGH
 #define FF_PROFILE_H264_HIGH AV_PROFILE_H264_HIGH
@@ -23,7 +11,70 @@ extern "C" {
 #define FF_PROFILE_HEVC_MAIN AV_PROFILE_HEVC_MAIN
 #endif
 
+#include "util.h"
+#include <limits>
+#include <map>
+#include <string.h>
+#include <vector>
+
+#include "common.h"
+
+#define LOG_MODULE "UTIL"
+#include "log.h"
+
 namespace util_encode {
+
+namespace {
+
+bool is_x264(const std::string &name) {
+  return name.find("libx264") != std::string::npos;
+}
+
+bool is_x265(const std::string &name) {
+  return name.find("libx265") != std::string::npos;
+}
+
+bool is_h264(const std::string &name) {
+  return name.find("h264") != std::string::npos || is_x264(name);
+}
+
+bool is_h265(const std::string &name) {
+  return name.find("hevc") != std::string::npos || is_x265(name);
+}
+
+bool set_optional_string_option(void *priv_data, const std::string &codec,
+                                const char *option, const char *value) {
+  if (!priv_data) {
+    LOG_ERROR(codec + " optional option " + option +
+              " failed: codec private data is null");
+    return false;
+  }
+
+  if (!av_opt_find(priv_data, option, NULL, 0, 0)) {
+    LOG_WARN(codec + " optional option " + option +
+             " is unavailable; continuing with encoder defaults");
+    return true;
+  }
+
+  const int ret = av_opt_set(priv_data, option, value, 0);
+  if (ret == AVERROR_OPTION_NOT_FOUND) {
+    LOG_WARN(codec + " optional option " + option +
+             " disappeared before apply; continuing with encoder defaults");
+    return true;
+  }
+  if (ret < 0) {
+    LOG_ERROR(codec + " optional option " + option + " failed, ret = " +
+              av_err2str(ret));
+    return false;
+  }
+  return true;
+}
+
+} // namespace
+
+bool is_software_encoder(const std::string &name) {
+  return is_x264(name) || is_x265(name);
+}
 
 void set_av_codec_ctx(AVCodecContext *c, const std::string &name, int kbs,
                       int gop, int fps) {
@@ -63,9 +114,9 @@ void set_av_codec_ctx(AVCodecContext *c, const std::string &name, int kbs,
   c->color_primaries = AVCOL_PRI_SMPTE170M;
   c->color_trc = AVCOL_TRC_SMPTE170M;
 
-  if (name.find("h264") != std::string::npos) {
+  if (is_h264(name)) {
     c->profile = FF_PROFILE_H264_HIGH;
-  } else if (name.find("hevc") != std::string::npos) {
+  } else if (is_h265(name)) {
     c->profile = FF_PROFILE_HEVC_MAIN;
   }
 }
@@ -80,8 +131,8 @@ bool set_lantency_free(void *priv_data, const std::string &name) {
     }
   }
   if (name.find("amf") != std::string::npos) {
-    if ((ret = av_opt_set(priv_data, "query_timeout", "1000", 0)) < 0) {
-      LOG_ERROR(std::string("amf set_lantency_free failed, ret = ") + av_err2str(ret));
+    if (!set_optional_string_option(priv_data, "amf", "query_timeout",
+                                    "1000")) {
       return false;
     }
   }
@@ -107,6 +158,26 @@ bool set_lantency_free(void *priv_data, const std::string &name) {
       return false;
     }
   }
+  if (is_x264(name)) {
+    if ((ret = av_opt_set(priv_data, "preset", "veryfast", 0)) < 0 ||
+        (ret = av_opt_set(priv_data, "tune", "zerolatency", 0)) < 0 ||
+        (ret = av_opt_set(priv_data, "x264-params",
+                          "repeat-headers=1:scenecut=0", 0)) < 0) {
+      LOG_ERROR(std::string("libx264 low-latency options failed, ret = ") +
+                av_err2str(ret));
+      return false;
+    }
+  }
+  if (is_x265(name)) {
+    if ((ret = av_opt_set(priv_data, "preset", "ultrafast", 0)) < 0 ||
+        (ret = av_opt_set(priv_data, "tune", "zerolatency", 0)) < 0 ||
+        (ret = av_opt_set(priv_data, "x265-params", "repeat-headers=1", 0)) <
+            0) {
+      LOG_ERROR(std::string("libx265 low-latency options failed, ret = ") +
+                av_err2str(ret));
+      return false;
+    }
+  }
   return true;
 }
 
@@ -116,6 +187,12 @@ bool set_quality(void *priv_data, const std::string &name, int quality) {
   if (name.find("nvenc") != std::string::npos) {
     switch (quality) {
     // p7 isn't zero lantency
+    case Quality_High:
+      if ((ret = av_opt_set(priv_data, "preset", "p5", 0)) < 0) {
+        LOG_ERROR(std::string("nvenc set opt preset p5 failed, ret = ") + av_err2str(ret));
+        return false;
+      }
+      break;
     case Quality_Medium:
       if ((ret = av_opt_set(priv_data, "preset", "p4", 0)) < 0) {
         LOG_ERROR(std::string("nvenc set opt preset p4 failed, ret = ") + av_err2str(ret));
@@ -130,6 +207,15 @@ bool set_quality(void *priv_data, const std::string &name, int quality) {
       break;
     default:
       break;
+    }
+  }
+  if (name.find("videotoolbox") != std::string::npos &&
+      quality == Quality_High) {
+    // Keep realtime enabled, but let VideoToolbox favor quality over speed.
+    if ((ret = av_opt_set_int(priv_data, "prio_speed", 0, 0)) < 0) {
+      LOG_ERROR(std::string("videotoolbox set opt prio_speed 0 failed, ret = ") +
+                av_err2str(ret));
+      return false;
     }
   }
   if (name.find("amf") != std::string::npos) {
@@ -303,6 +389,9 @@ bool set_others(void *priv_data, const std::string &name) {
 }
 
 bool change_bit_rate(AVCodecContext *c, const std::string &name, int kbs) {
+  if (is_software_encoder(name)) {
+    return false;
+  }
   if (kbs > 0) {
     c->bit_rate = kbs * 1000;
     if (name.find("qsv") != std::string::npos) {

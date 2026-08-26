@@ -191,7 +191,11 @@ impl Encoder {
         ctx: EncodeContext,
         _sdk: Option<String>,
     ) -> AvailableEncoders {
-        if !(cfg!(windows) || cfg!(target_os = "linux") || cfg!(target_os = "macos")) {
+        if !(cfg!(windows)
+            || cfg!(target_os = "linux")
+            || cfg!(target_os = "macos")
+            || cfg!(target_os = "ios"))
+        {
             return AvailableEncoders::default();
         }
         let mut codecs: Vec<CodecInfo> = vec![];
@@ -236,6 +240,15 @@ impl Encoder {
                     ..Default::default()
                 });
             }
+            #[cfg(windows)]
+            if _intel {
+                codecs.push(CodecInfo {
+                    name: "av1_qsv".to_owned(),
+                    format: AV1,
+                    priority: Priority::Best as _,
+                    ..Default::default()
+                });
+            }
             if _nv && contains(Driver::NV, H264) {
                 codecs.push(CodecInfo {
                     name: "h264_nvenc".to_owned(),
@@ -248,6 +261,14 @@ impl Encoder {
                 codecs.push(CodecInfo {
                     name: "hevc_nvenc".to_owned(),
                     format: H265,
+                    priority: Priority::Best as _,
+                    ..Default::default()
+                });
+            }
+            if _nv {
+                codecs.push(CodecInfo {
+                    name: "av1_nvenc".to_owned(),
+                    format: AV1,
                     priority: Priority::Best as _,
                     ..Default::default()
                 });
@@ -269,6 +290,14 @@ impl Encoder {
                     ..Default::default()
                 });
             }
+            if amf {
+                codecs.push(CodecInfo {
+                    name: "av1_amf".to_owned(),
+                    format: AV1,
+                    priority: Priority::Best as _,
+                    ..Default::default()
+                });
+            }
             #[cfg(target_os = "linux")]
             {
                 codecs.push(CodecInfo {
@@ -282,6 +311,12 @@ impl Encoder {
                 codecs.push(CodecInfo {
                     name: "hevc_vaapi".to_owned(),
                     format: H265,
+                    priority: Priority::Good as _,
+                    ..Default::default()
+                });
+                codecs.push(CodecInfo {
+                    name: "av1_vaapi".to_owned(),
+                    format: AV1,
                     priority: Priority::Good as _,
                     ..Default::default()
                 });
@@ -309,6 +344,43 @@ impl Encoder {
                     ..Default::default()
                 });
             }
+            codecs.push(CodecInfo {
+                name: "av1_videotoolbox".to_owned(),
+                format: AV1,
+                priority: Priority::Best as _,
+                ..Default::default()
+            });
+        }
+        #[cfg(target_os = "ios")]
+        {
+            codecs.push(CodecInfo {
+                name: "h264_videotoolbox".to_owned(),
+                format: H264,
+                priority: Priority::Best as _,
+                ..Default::default()
+            });
+            codecs.push(CodecInfo {
+                name: "hevc_videotoolbox".to_owned(),
+                format: H265,
+                priority: Priority::Best as _,
+                ..Default::default()
+            });
+        }
+
+        #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
+        {
+            codecs.push(CodecInfo {
+                name: "libx264".to_owned(),
+                format: H264,
+                priority: Priority::Soft as _,
+                ..Default::default()
+            });
+            codecs.push(CodecInfo {
+                name: "libx265".to_owned(),
+                format: H265,
+                priority: Priority::Soft as _,
+                ..Default::default()
+            });
         }
 
         // qsv doesn't support yuv420p
@@ -322,7 +394,7 @@ impl Encoder {
 
         let mut res = AvailableEncoders::default();
 
-        if let Ok(yuv) = Encoder::dummy_yuv(ctx.clone()) {
+        if Encoder::dummy_yuv(ctx.clone()).is_ok() {
             for codec in codecs {
                 // Skip if this format already exists in results
                 if res
@@ -334,7 +406,7 @@ impl Encoder {
                 }
 
                 debug!("Testing encoder: {}", codec.name);
-                match Self::probe_encoder(&codec, &ctx, &yuv) {
+                match Self::probe_encoder(&codec, &ctx) {
                     EncoderProbeStatus::Valid => {
                         res.codecs.push(codec);
                     }
@@ -357,15 +429,18 @@ impl Encoder {
         res
     }
 
-    fn probe_encoder(
-        codec: &CodecInfo,
-        base_ctx: &EncodeContext,
-        yuv: &[u8],
-    ) -> EncoderProbeStatus {
-        let c = EncodeContext {
+    fn probe_encoder(codec: &CodecInfo, base_ctx: &EncodeContext) -> EncoderProbeStatus {
+        let mut c = EncodeContext {
             name: codec.name.clone(),
             mc_name: codec.mc_name.clone(),
             ..base_ctx.clone()
+        };
+        if codec.name == "libx265" {
+            c.pixfmt = AVPixelFormat::AV_PIX_FMT_YUV420P;
+        }
+        let yuv = match Encoder::dummy_yuv(c.clone()) {
+            Ok(yuv) => yuv,
+            Err(_) => return EncoderProbeStatus::HardFailure,
         };
 
         let mut encoder = match Encoder::new(c) {
@@ -385,7 +460,7 @@ impl Encoder {
             attempt += 1;
             let encode_started_at = Instant::now();
 
-            match encoder.encode(yuv, pts) {
+            match encoder.encode(&yuv, pts) {
                 Ok(frames) => {
                     let encode_elapsed = encode_started_at.elapsed().as_millis();
                     let total_elapsed = started_at.elapsed().as_millis();

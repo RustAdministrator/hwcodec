@@ -1,4 +1,9 @@
-#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+#[cfg(any(
+    target_os = "windows",
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "ios"
+))]
 use super::Priority;
 use crate::common::TEST_TIMEOUT_MS;
 use crate::ffmpeg::{init_av_log, AVHWDeviceType::*};
@@ -182,6 +187,13 @@ impl Decoder {
                     priority: Priority::Good as _,
                     ..Default::default()
                 });
+                codecs.push(CodecInfo {
+                    name: "av1".to_owned(),
+                    format: AV1,
+                    hwdevice: AV_HWDEVICE_TYPE_CUDA,
+                    priority: Priority::Good as _,
+                    ..Default::default()
+                });
             }
         }
 
@@ -202,6 +214,13 @@ impl Decoder {
                     priority: Priority::Best as _,
                     ..Default::default()
                 },
+                CodecInfo {
+                    name: "av1".to_owned(),
+                    format: AV1,
+                    hwdevice: AV_HWDEVICE_TYPE_D3D11VA,
+                    priority: Priority::Best as _,
+                    ..Default::default()
+                },
             ]);
         }
 
@@ -218,6 +237,13 @@ impl Decoder {
                 CodecInfo {
                     name: "hevc".to_owned(),
                     format: H265,
+                    hwdevice: AV_HWDEVICE_TYPE_VAAPI,
+                    priority: Priority::Good as _,
+                    ..Default::default()
+                },
+                CodecInfo {
+                    name: "av1".to_owned(),
+                    format: AV1,
                     hwdevice: AV_HWDEVICE_TYPE_VAAPI,
                     priority: Priority::Good as _,
                     ..Default::default()
@@ -250,11 +276,43 @@ impl Decoder {
                     ..Default::default()
                 });
             }
+            codecs.push(CodecInfo {
+                name: "av1".to_owned(),
+                format: AV1,
+                hwdevice: AV_HWDEVICE_TYPE_VIDEOTOOLBOX,
+                priority: Priority::Best as _,
+                ..Default::default()
+            });
+        }
+        #[cfg(target_os = "ios")]
+        {
+            codecs.push(CodecInfo {
+                name: "h264".to_owned(),
+                format: H264,
+                hwdevice: AV_HWDEVICE_TYPE_VIDEOTOOLBOX,
+                priority: Priority::Best as _,
+                ..Default::default()
+            });
+            codecs.push(CodecInfo {
+                name: "hevc".to_owned(),
+                format: H265,
+                hwdevice: AV_HWDEVICE_TYPE_VIDEOTOOLBOX,
+                priority: Priority::Best as _,
+                ..Default::default()
+            });
+            codecs.push(CodecInfo {
+                name: "av1".to_owned(),
+                format: AV1,
+                hwdevice: AV_HWDEVICE_TYPE_VIDEOTOOLBOX,
+                priority: Priority::Best as _,
+                ..Default::default()
+            });
         }
 
         let mut res = Vec::<CodecInfo>::new();
         let buf264 = &crate::common::DATA_H264_720P[..];
         let buf265 = &crate::common::DATA_H265_720P[..];
+        let bufav1 = &crate::common::DATA_AV1_720P[..];
 
         for codec in codecs {
             // Skip if this format already exists in results
@@ -282,6 +340,7 @@ impl Decoder {
                     let data = match codec.format {
                         H264 => buf264,
                         H265 => buf265,
+                        AV1 => bufav1,
                         _ => {
                             log::error!("Unsupported format: {:?}, skipping", codec.format);
                             continue;

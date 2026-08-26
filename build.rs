@@ -17,6 +17,8 @@ const RUSTADMIN_LOCAL_CODEC_ROOT_ENV: &str = "RUSTADMIN_LINUX_CODEC_ROOT";
 #[cfg(target_os = "macos")]
 const RUSTADMIN_LOCAL_CODEC_ROOT_ENV: &str = "RUSTADMIN_MACOS_CODEC_ROOT";
 const CMAKE_PREFIX_PATH_ENV: &str = "CMAKE_PREFIX_PATH";
+const IOS_CODEC_ROOT_ENV: &str = "RUSTDESK_IOS_CODEC_ROOT";
+const ANDROID_CODEC_ROOT_ENV: &str = "RUSTADMIN_ANDROID_NATIVE_ROOT";
 #[cfg(windows)]
 const LOCAL_CODEC_LINK_MODE_ENV: &str = "RUSTDESK_WINDOWS_CODEC_LINK_MODE";
 #[cfg(target_os = "linux")]
@@ -81,14 +83,38 @@ fn build_common(builder: &mut Build) {
         builder.file(win_path.join("win.cpp"));
     }
     #[cfg(target_os = "linux")]
-    {
+    if target_os == "linux" {
         let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let externals_dir = manifest_dir.join("externals");
-        // ffnvcodec
-        let ffnvcodec_path = externals_dir
+        let bundled_ffnvcodec_path = externals_dir
             .join("nv-codec-headers_n12.1.14.0")
             .join("include")
             .join("ffnvcodec");
+        let mut ffnvcodec_paths = Vec::new();
+        for variable in [
+            LOCAL_CODEC_ROOT_ENV,
+            RUSTADMIN_LOCAL_CODEC_ROOT_ENV,
+            CMAKE_PREFIX_PATH_ENV,
+        ] {
+            if let Some(paths) = env::var_os(variable) {
+                for root in env::split_paths(&paths) {
+                    ffnvcodec_paths.push(root.join("include").join("ffnvcodec"));
+                    ffnvcodec_paths.push(root.join("ffnvcodec"));
+                    ffnvcodec_paths.push(root);
+                }
+            }
+        }
+        ffnvcodec_paths.push(bundled_ffnvcodec_path);
+        let ffnvcodec_path = ffnvcodec_paths
+            .into_iter()
+            .find(|path| path.join("dynlink_cuda.h").is_file())
+            .unwrap_or_else(|| {
+                panic!(
+                    "dynlink_cuda.h was not found; install nv-codec-headers or add it under <codec-root>/include/ffnvcodec"
+                )
+            });
+        println!("cargo:include={}", ffnvcodec_path.display());
+        println!("cargo:rerun-if-changed={}", ffnvcodec_path.display());
         builder.include(ffnvcodec_path);
 
         let linux_path = _platform_path.join("linux");
@@ -184,18 +210,32 @@ mod ffmpeg {
 
     #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
     fn local_roots() -> Vec<PathBuf> {
+        let cargo_target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
         println!("cargo:rerun-if-env-changed={LOCAL_CODEC_ROOT_ENV}");
         println!("cargo:rerun-if-env-changed={RUSTADMIN_LOCAL_CODEC_ROOT_ENV}");
         println!("cargo:rerun-if-env-changed={CMAKE_PREFIX_PATH_ENV}");
+        println!("cargo:rerun-if-env-changed={IOS_CODEC_ROOT_ENV}");
+        println!("cargo:rerun-if-env-changed={ANDROID_CODEC_ROOT_ENV}");
         println!("cargo:rerun-if-env-changed={LOCAL_CODEC_LINK_MODE_ENV}");
         println!("cargo:rerun-if-env-changed={RUSTADMIN_LOCAL_CODEC_LINK_MODE_ENV}");
 
         let mut roots = Vec::new();
-        if let Some(path) = env::var_os(LOCAL_CODEC_ROOT_ENV) {
-            push_prefix_candidate(&mut roots, PathBuf::from(path));
+        if cargo_target_os == "ios" {
+            if let Some(path) = env::var_os(IOS_CODEC_ROOT_ENV) {
+                push_prefix_candidate(&mut roots, PathBuf::from(path));
+            }
         }
-        if let Some(path) = env::var_os(RUSTADMIN_LOCAL_CODEC_ROOT_ENV) {
-            push_prefix_candidate(&mut roots, PathBuf::from(path));
+        if cargo_target_os == "android" {
+            if let Some(path) = env::var_os(ANDROID_CODEC_ROOT_ENV) {
+                push_prefix_candidate(&mut roots, PathBuf::from(path));
+            }
+        } else {
+            if let Some(path) = env::var_os(LOCAL_CODEC_ROOT_ENV) {
+                push_prefix_candidate(&mut roots, PathBuf::from(path));
+            }
+            if let Some(path) = env::var_os(RUSTADMIN_LOCAL_CODEC_ROOT_ENV) {
+                push_prefix_candidate(&mut roots, PathBuf::from(path));
+            }
         }
         if let Some(paths) = env::var_os(CMAKE_PREFIX_PATH_ENV) {
             for path in env::split_paths(&paths) {
@@ -206,12 +246,22 @@ mod ffmpeg {
         if let Some(manifest_dir) = env::var_os("CARGO_MANIFEST_DIR") {
             let manifest_dir = Path::new(&manifest_dir);
             if let Some(workspace_root) = manifest_dir.parent() {
-                #[cfg(windows)]
-                let local_dir = "windows-codecs";
-                #[cfg(target_os = "linux")]
-                let local_dir = "linux-codecs";
-                #[cfg(target_os = "macos")]
-                let local_dir = "macos-codecs";
+                let local_dir = if cargo_target_os == "ios" {
+                    "ios-codecs"
+                } else {
+                    #[cfg(windows)]
+                    {
+                        "windows-codecs"
+                    }
+                    #[cfg(target_os = "linux")]
+                    {
+                        "linux-codecs"
+                    }
+                    #[cfg(target_os = "macos")]
+                    {
+                        "macos-codecs"
+                    }
+                };
 
                 for repo_local_root in [
                     workspace_root
@@ -555,6 +605,9 @@ mod ffmpeg {
     fn run_pkg_config(root: Option<&Path>, args: &[&str]) -> Option<String> {
         let mut command = std::process::Command::new("pkg-config");
         prepend_pkg_config_dirs(root, &mut command);
+        if root.is_some() && env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("android") {
+            command.env_remove("PKG_CONFIG_SYSROOT_DIR");
+        }
         command.args(args).args(FFMPEG_PC_PACKAGES);
 
         let output = command.output().ok()?;
@@ -639,7 +692,9 @@ mod ffmpeg {
                 }
             } else if token == "-pthread" {
                 #[cfg(target_os = "linux")]
-                println!("cargo:rustc-link-lib=pthread");
+                if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("android") {
+                    println!("cargo:rustc-link-lib=pthread");
+                }
             } else if token.ends_with(".a") {
                 if !emit_library_path(Path::new(token), true) {
                     println!("cargo:rustc-link-arg={token}");
@@ -844,7 +899,16 @@ mod ffmpeg {
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         {
             let cargo_target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap();
-            if cargo_target_os == "linux" || cargo_target_os == "macos" {
+            if cargo_target_os == "android" {
+                if !link_local_unix(builder) {
+                    panic!(
+                        "Android FFmpeg was not found. Set {ANDROID_CODEC_ROOT_ENV} or {CMAKE_PREFIX_PATH_ENV} to an Android prefix containing FFmpeg headers, static libraries, and pkg-config metadata."
+                    );
+                }
+            } else if cargo_target_os == "linux"
+                || cargo_target_os == "macos"
+                || cargo_target_os == "ios"
+            {
                 if !link_local_unix(builder)
                     && !link_pkg_config_ffmpeg(
                         builder,
@@ -899,7 +963,7 @@ mod ffmpeg {
                 format!("{}-{}", target_arch, target_os)
             }
         } else if target_os == "windows" {
-            "x64-windows-static".to_owned()
+            format!("{}-windows-static", target_arch)
         } else {
             format!("{}-{}", target_arch, target_os)
         };
@@ -919,7 +983,8 @@ mod ffmpeg {
         );
         {
             let mut static_libs = vec!["avcodec", "avutil", "avformat"];
-            if target_os == "windows" {
+            // Intel Quick Sync is unavailable in the Windows ARM64 FFmpeg build.
+            if target_os == "windows" && (target_arch == "x64" || target_arch == "x86") {
                 static_libs.push("libmfx");
             }
             static_libs
@@ -940,7 +1005,7 @@ mod ffmpeg {
         let dyn_libs: Vec<&str> = if target_os == "windows" {
             [
                 "User32", "bcrypt", "ole32", "oleaut32", "advapi32", "uuid", "mf", "mfplat",
-                "mfuuid", "strmiids",
+                "mfuuid", "strmiids", "ws2_32", "secur32", "ncrypt", "crypt32",
             ]
             .to_vec()
         } else if target_os == "linux" {
