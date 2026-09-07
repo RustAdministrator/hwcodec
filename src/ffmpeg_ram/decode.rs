@@ -163,11 +163,12 @@ impl Decoder {
     }
 
     pub fn available_decoders() -> Vec<CodecInfo> {
+        #[cfg(target_os = "linux")]
         use log::debug;
 
         #[allow(unused_mut)]
         let mut codecs: Vec<CodecInfo> = vec![];
-        // windows disable nvdec to avoid gpu stuck
+        // Generic CUDA acceleration uses the native FFmpeg decoders on Linux.
         #[cfg(target_os = "linux")]
         {
             let (nv, _, _) = crate::common::supported_gpu(false);
@@ -222,6 +223,21 @@ impl Decoder {
                     ..Default::default()
                 },
             ]);
+            // Dedicated CUVID decoders also work with FFmpeg distributions that
+            // omit the native h264/hevc decoders used by D3D11VA above.
+            for (name, format) in [
+                ("h264_cuvid", H264),
+                ("hevc_cuvid", H265),
+                ("av1_cuvid", AV1),
+            ] {
+                codecs.push(CodecInfo {
+                    name: name.to_owned(),
+                    format,
+                    hwdevice: AV_HWDEVICE_TYPE_CUDA,
+                    priority: Priority::Good as _,
+                    ..Default::default()
+                });
+            }
         }
 
         #[cfg(target_os = "linux")]
@@ -309,6 +325,15 @@ impl Decoder {
             });
         }
 
+        // Software fallbacks must pass the same real-frame test as hardware.
+        let soft = CodecInfo::soft();
+        codecs.extend(soft.h264);
+        codecs.extend(soft.h265);
+        Self::probe_decoders(codecs)
+    }
+
+    fn probe_decoders(codecs: Vec<CodecInfo>) -> Vec<CodecInfo> {
+        use log::debug;
         let mut res = Vec::<CodecInfo>::new();
         let buf264 = &crate::common::DATA_H264_720P[..];
         let buf265 = &crate::common::DATA_H265_720P[..];
@@ -316,10 +341,11 @@ impl Decoder {
 
         for codec in codecs {
             // Skip if this format already exists in results
-            if res
-                .iter()
-                .any(|existing: &CodecInfo| existing.format == codec.format)
-            {
+            if res.iter().any(|existing: &CodecInfo| {
+                existing.format == codec.format
+                    && (existing.hwdevice == AV_HWDEVICE_TYPE_NONE)
+                        == (codec.hwdevice == AV_HWDEVICE_TYPE_NONE)
+            }) {
                 continue;
             }
 
@@ -350,7 +376,7 @@ impl Decoder {
                     let start = Instant::now();
 
                     match decoder.decode(data) {
-                        Ok(_) => {
+                        Ok(frames) if !frames.is_empty() => {
                             let elapsed = start.elapsed().as_millis();
 
                             if elapsed < TEST_TIMEOUT_MS as _ {
@@ -363,6 +389,9 @@ impl Decoder {
                                 );
                             }
                         }
+                        Ok(_) => {
+                            debug!("Decoder {} produced no usable frame", codec.name);
+                        }
                         Err(err) => {
                             debug!("Decoder {} test failed with error: {}", codec.name, err);
                         }
@@ -374,15 +403,22 @@ impl Decoder {
             }
         }
 
-        let soft = CodecInfo::soft();
-        if let Some(c) = soft.h264 {
-            res.push(c);
-        }
-        if let Some(c) = soft.h265 {
-            res.push(c);
-        }
-
         res
+    }
+
+    pub fn available_software_decoders() -> Vec<CodecInfo> {
+        // These facts belong to the loaded FFmpeg library and are independent
+        // of GPU state and the user's hardware-acceleration preference.
+        static SOFTWARE_DECODERS: std::sync::OnceLock<Vec<CodecInfo>> = std::sync::OnceLock::new();
+        SOFTWARE_DECODERS
+            .get_or_init(|| {
+                let soft = CodecInfo::soft();
+                let mut candidates = Vec::with_capacity(2);
+                candidates.extend(soft.h264);
+                candidates.extend(soft.h265);
+                Self::probe_decoders(candidates)
+            })
+            .clone()
     }
 }
 
@@ -392,6 +428,117 @@ impl Drop for Decoder {
             ffmpeg_ram_free_decoder(self.codec);
             self.codec = std::ptr::null_mut();
             let _ = Box::from_raw(self.frames);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unavailable_decoder_is_not_advertised() {
+        let result = Decoder::probe_decoders(vec![CodecInfo {
+            name: "rustadmin_missing_decoder".to_owned(),
+            format: H264,
+            hwdevice: AV_HWDEVICE_TYPE_NONE,
+            ..Default::default()
+        }]);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    #[ignore = "requires Windows NVIDIA CUVID H264 and HEVC decoding"]
+    #[cfg(windows)]
+    fn windows_cuvid_decode_smoke() {
+        let _ = env_logger::builder().is_test(true).try_init();
+        for (name, data) in [
+            ("h264_cuvid", crate::common::DATA_H264_720P),
+            ("hevc_cuvid", crate::common::DATA_H265_720P),
+        ] {
+            // Exercise repeated decoder creation and GPU-to-RAM delivery.
+            for _ in 0..8 {
+                let mut decoder = Decoder::new(DecodeContext {
+                    name: name.to_owned(),
+                    device_type: AV_HWDEVICE_TYPE_CUDA,
+                    thread_count: 1,
+                })
+                .expect("CUVID decoder must open");
+                for _ in 0..4 {
+                    let frames = decoder.decode(data).expect("CUVID must decode the sample");
+                    assert!(!frames.is_empty(), "{name} returned no usable frame");
+                    for frame in frames {
+                        assert_eq!((frame.width, frame.height), (1280, 720));
+                        assert!(!frame.data.is_empty());
+                    }
+                }
+            }
+        }
+        let codecs = Decoder::available_decoders();
+        for format in [H264, H265] {
+            assert!(codecs
+                .iter()
+                .any(|c| c.format == format && c.hwdevice != AV_HWDEVICE_TYPE_NONE));
+        }
+    }
+
+    #[test]
+    #[ignore = "requires Windows NVIDIA NVENC and CUVID H264/HEVC"]
+    #[cfg(windows)]
+    fn windows_cuvid_reference_stream_smoke() {
+        use crate::common::{Quality::Quality_Default, RateControl::RC_CBR};
+        use crate::ffmpeg_ram::encode::{EncodeContext, Encoder};
+        for (encoder_name, decoder_name) in
+            [("h264_nvenc", "h264_cuvid"), ("hevc_nvenc", "hevc_cuvid")]
+        {
+            let mut encoder = Encoder::new(EncodeContext {
+                name: encoder_name.to_owned(),
+                mc_name: None,
+                width: 640,
+                height: 360,
+                pixfmt: AVPixelFormat::AV_PIX_FMT_NV12,
+                align: 64,
+                fps: 30,
+                gop: 120,
+                rc: RC_CBR,
+                quality: Quality_Default,
+                kbs: 1000,
+                q: -1,
+                thread_count: 1,
+            })
+            .expect("NVENC must open");
+            let mut decoder = Decoder::new(DecodeContext {
+                name: decoder_name.to_owned(),
+                device_type: AV_HWDEVICE_TYPE_CUDA,
+                thread_count: 1,
+            })
+            .expect("CUVID must open");
+            let mut input = vec![128; encoder.length as usize];
+            let stride = encoder.linesize[0] as usize;
+            let mut saw_delta = false;
+            for index in 0..12 {
+                let luma = 32 + index as u8 * 10;
+                for row in 0..360 {
+                    input[row * stride..row * stride + 640].fill(luma);
+                }
+                let packets = encoder
+                    .encode(&input, index * 33, false)
+                    .expect("NVENC must encode");
+                assert!(!packets.is_empty());
+                for packet in packets {
+                    saw_delta |= packet.key == 0;
+                    let frames = decoder
+                        .decode(&packet.data)
+                        .expect("CUVID must decode each reference-dependent packet");
+                    assert_eq!(frames.len(), 1, "each packet must deliver immediately");
+                    assert_eq!((frames[0].width, frames[0].height), (640, 360));
+                    assert!(
+                        (i16::from(frames[0].data[0][0]) - i16::from(luma)).abs() <= 8,
+                        "decoder must return the current image, not an older buffered frame"
+                    );
+                }
+            }
+            assert!(saw_delta, "the test must exercise dependent frames");
         }
     }
 }

@@ -83,6 +83,8 @@ public:
       data_format_ = DataFormat::H264;
     } else if (name_.find("hevc") != std::string::npos) {
       data_format_ = DataFormat::H265;
+    } else if (name_.find("av1") != std::string::npos) {
+      data_format_ = DataFormat::AV1;
     } else {
       LOG_ERROR(std::string("unsupported data format:") + name_);
       return -1;
@@ -177,6 +179,8 @@ private:
     int ret;
     AVFrame *tmp_frame = NULL;
     bool decoded = false;
+    bool send_boundary = name_.find("_cuvid") != std::string::npos &&
+                         (data_format_ == DataFormat::H264 || data_format_ == DataFormat::H265);
 
     ret = avcodec_send_packet(c_, pkt_);
     if (ret < 0) {
@@ -186,6 +190,26 @@ private:
     auto start = util::now();
     while (ret >= 0 && util::elapsed_ms(start) < ENCODE_TIMEOUT_MS) {
       if ((ret = avcodec_receive_frame(c_, frame_)) != 0) {
+        if (ret == AVERROR(EAGAIN) && send_boundary) {
+          // CUVID parses Annex B as a byte stream. End the complete picture
+          // supplied by RustAdmin without flushing/resetting the reference state.
+          // The second AUD terminates the first AUD for the streaming parser.
+          static const uint8_t h264_boundary[12 + AV_INPUT_BUFFER_PADDING_SIZE] = {
+              0, 0, 0, 1, 9, 0xf0, 0, 0, 0, 1, 9, 0xf0};
+          static const uint8_t hevc_boundary[14 + AV_INPUT_BUFFER_PADDING_SIZE] = {
+              0, 0, 0, 1, 0x46, 1, 0x50, 0, 0, 0, 1, 0x46, 1, 0x50};
+          AVPacket boundary = {};
+          boundary.data = const_cast<uint8_t *>(data_format_ == DataFormat::H264
+                                                   ? h264_boundary : hevc_boundary);
+          boundary.size = data_format_ == DataFormat::H264 ? 12 : 14;
+          boundary.pts = boundary.dts = AV_NOPTS_VALUE;
+          send_boundary = false;
+          ret = avcodec_send_packet(c_, &boundary);
+          if (ret < 0) {
+            goto _exit;
+          }
+          continue;
+        }
         if (ret != AVERROR(EAGAIN)) {
           LOG_ERROR(std::string("avcodec_receive_frame failed, ret = ") + av_err2str(ret));
         }
