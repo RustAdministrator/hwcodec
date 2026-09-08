@@ -163,7 +163,7 @@ impl Decoder {
     }
 
     pub fn available_decoders() -> Vec<CodecInfo> {
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         use log::debug;
 
         #[allow(unused_mut)]
@@ -334,21 +334,11 @@ impl Decoder {
 
     fn probe_decoders(codecs: Vec<CodecInfo>) -> Vec<CodecInfo> {
         use log::debug;
-        let mut res = Vec::<CodecInfo>::new();
         let buf264 = &crate::common::DATA_H264_720P[..];
         let buf265 = &crate::common::DATA_H265_720P[..];
         let bufav1 = &crate::common::DATA_AV1_720P[..];
 
-        for codec in codecs {
-            // Skip if this format already exists in results
-            if res.iter().any(|existing: &CodecInfo| {
-                existing.format == codec.format
-                    && (existing.hwdevice == AV_HWDEVICE_TYPE_NONE)
-                        == (codec.hwdevice == AV_HWDEVICE_TYPE_NONE)
-            }) {
-                continue;
-            }
-
+        Self::probe_decoders_with(codecs, |codec| {
             debug!(
                 "Testing decoder: {} (hwdevice: {:?})",
                 codec.name, codec.hwdevice
@@ -369,7 +359,7 @@ impl Decoder {
                         AV1 => bufav1,
                         _ => {
                             log::error!("Unsupported format: {:?}, skipping", codec.format);
-                            continue;
+                            return false;
                         }
                     };
 
@@ -381,7 +371,7 @@ impl Decoder {
 
                             if elapsed < TEST_TIMEOUT_MS as _ {
                                 debug!("Decoder {} test passed", codec.name);
-                                res.push(codec);
+                                return true;
                             } else {
                                 debug!(
                                     "Decoder {} test failed - timeout: {}ms",
@@ -401,8 +391,27 @@ impl Decoder {
                     debug!("Failed to create decoder {}", codec.name);
                 }
             }
-        }
+            false
+        })
+    }
 
+    fn probe_decoders_with(
+        codecs: Vec<CodecInfo>,
+        mut probe: impl FnMut(&CodecInfo) -> bool,
+    ) -> Vec<CodecInfo> {
+        let mut res = Vec::<CodecInfo>::with_capacity(codecs.len());
+        for codec in codecs {
+            // Keep independently validated backends for stream-local fallback.
+            if res
+                .iter()
+                .any(|existing| existing.name == codec.name && existing.hwdevice == codec.hwdevice)
+            {
+                continue;
+            }
+            if probe(&codec) {
+                res.push(codec);
+            }
+        }
         res
     }
 
@@ -435,6 +444,60 @@ impl Drop for Decoder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn decoder_probe_keeps_distinct_backends_for_the_same_format() {
+        let hardware = CodecInfo {
+            name: "h264".into(),
+            format: H264,
+            hwdevice: AV_HWDEVICE_TYPE_D3D11VA,
+            ..Default::default()
+        };
+        let alternative = CodecInfo {
+            name: "h264_cuvid".into(),
+            hwdevice: AV_HWDEVICE_TYPE_CUDA,
+            ..hardware.clone()
+        };
+        let software = CodecInfo::soft().h264.unwrap();
+        let candidates = vec![hardware.clone(), alternative, software, hardware];
+        let mut probes = 0;
+        let result = Decoder::probe_decoders_with(candidates, |_| {
+            probes += 1;
+            true
+        });
+        assert_eq!(probes, 3);
+        assert_eq!(result.len(), 3);
+        assert_eq!(result[0].hwdevice, AV_HWDEVICE_TYPE_D3D11VA);
+        assert_eq!(result[1].name, "h264_cuvid");
+        assert_eq!(result[2].hwdevice, AV_HWDEVICE_TYPE_NONE);
+    }
+
+    #[test]
+    fn failed_probe_does_not_remove_other_formats_or_backends() {
+        let candidates = vec![
+            CodecInfo {
+                name: "h264".into(),
+                format: H264,
+                ..Default::default()
+            },
+            CodecInfo {
+                name: "h264_cuvid".into(),
+                format: H264,
+                hwdevice: AV_HWDEVICE_TYPE_CUDA,
+                ..Default::default()
+            },
+            CodecInfo {
+                name: "hevc_cuvid".into(),
+                format: H265,
+                hwdevice: AV_HWDEVICE_TYPE_CUDA,
+                ..Default::default()
+            },
+        ];
+        let result = Decoder::probe_decoders_with(candidates, |info| info.name != "h264");
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].format, H264);
+        assert_eq!(result[1].format, H265);
+    }
 
     #[test]
     fn unavailable_decoder_is_not_advertised() {
