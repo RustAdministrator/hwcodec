@@ -511,6 +511,30 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires Windows D3D11 AV1 hardware decoding"]
+    #[cfg(windows)]
+    fn windows_d3d11_av1_decode_smoke() {
+        let _ = env_logger::builder().is_test(true).try_init();
+        for _ in 0..4 {
+            let mut decoder = Decoder::new(DecodeContext {
+                name: "av1".to_owned(),
+                device_type: AV_HWDEVICE_TYPE_D3D11VA,
+                thread_count: 1,
+            })
+            .expect("AV1 D3D11 decoder must pass the native capability check");
+            let frames = decoder
+                .decode(crate::common::DATA_AV1_720P)
+                .expect("AV1 D3D11 decoder must decode the sample");
+            assert_eq!(frames.len(), 1);
+            assert_eq!((frames[0].width, frames[0].height), (1280, 720));
+            assert_eq!(frames[0].pixfmt, AVPixelFormat::AV_PIX_FMT_NV12);
+        }
+        assert!(Decoder::available_decoders()
+            .iter()
+            .any(|c| c.format == AV1 && c.hwdevice == AV_HWDEVICE_TYPE_D3D11VA));
+    }
+
+    #[test]
     #[ignore = "requires Windows NVIDIA CUVID H264 and HEVC decoding"]
     #[cfg(windows)]
     fn windows_cuvid_decode_smoke() {

@@ -535,6 +535,10 @@ AdapterVendor NativeDevice::GetVendor() {
 }
 
 bool NativeDevice::support_decode(DataFormat format) {
+  // D3D11_DECODER_PROFILE_AV1_VLD_PROFILE0, kept local for older SDK headers.
+  static constexpr GUID av1_profile0 = {
+      0xb8be4ccb, 0xcf53, 0x46ba,
+      {0x8d, 0x59, 0xd6, 0xb8, 0xa6, 0xda, 0x5d, 0x2a}};
   const GUID *guid = nullptr;
   switch (format) {
   case H264:
@@ -542,6 +546,9 @@ bool NativeDevice::support_decode(DataFormat format) {
     break;
   case H265:
     guid = &D3D11_DECODER_PROFILE_HEVC_VLD_MAIN;
+    break;
+  case AV1:
+    guid = &av1_profile0;
     break;
   default:
     return false;
