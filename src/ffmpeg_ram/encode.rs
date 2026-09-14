@@ -373,16 +373,19 @@ impl Encoder {
             });
         }
 
-        // H.264/H.265 encoding is deliberately hardware/platform-only in
-        // distributed builds. Keep this final allow-list even though the
-        // current candidates are hardware-backed, so a future FFmpeg software
-        // wrapper cannot become advertised merely by being added above.
+        // Optional software codecs are advertised only after the linked FFmpeg
+        // build successfully encodes a local test frame. No codec is bundled here.
+        for (name, format) in [("libx264", H264), ("libx265", H265)] {
+            codecs.push(CodecInfo {
+                name: name.to_owned(),
+                format,
+                priority: Priority::Normal as _,
+                ..Default::default()
+            });
+        }
         codecs.retain(|c| {
-            if !c.is_hardware_encoder() {
-                warn!(
-                    "Rejecting non-hardware encoder candidate by distribution policy: {}",
-                    c.name
-                );
+            if !CodecInfo::is_supported_encoder_name(&c.name) {
+                warn!("Rejecting unknown encoder candidate: {}", c.name);
                 return false;
             }
             let ctx = ctx.clone();
@@ -396,11 +399,11 @@ impl Encoder {
 
         if Encoder::dummy_yuv(ctx.clone()).is_ok() {
             for codec in codecs {
-                // Skip if this format already exists in results
+                // Skip only duplicate implementations; preserve independent HW/SW choices
                 if res
                     .codecs
                     .iter()
-                    .any(|existing: &CodecInfo| existing.format == codec.format)
+                    .any(|existing: &CodecInfo| existing.name == codec.name)
                 {
                     continue;
                 }
@@ -433,6 +436,11 @@ impl Encoder {
         let c = EncodeContext {
             name: codec.name.clone(),
             mc_name: codec.mc_name.clone(),
+            pixfmt: if codec.is_software_encoder() {
+                AVPixelFormat::AV_PIX_FMT_YUV420P
+            } else {
+                base_ctx.pixfmt
+            },
             ..base_ctx.clone()
         };
         let yuv = match Encoder::dummy_yuv(c.clone()) {

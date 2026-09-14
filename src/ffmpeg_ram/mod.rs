@@ -46,10 +46,12 @@ impl Default for CodecInfo {
 }
 
 impl CodecInfo {
-    /// Distributed H.26x encoders must be supplied by a reviewed hardware or
-    /// platform backend. Keep this as a fail-closed allow-list: do not add
-    /// libx264, libx265, libopenh264, or another CPU H.26x encoder. Software
-    /// encoding fallback belongs to the AV1/VP9/VP8 paths in RustAdmin.
+    pub fn is_supported_encoder_name(name: &str) -> bool {
+        Self::is_hardware_encoder_name(name) || matches!(name, "libx264" | "libx265")
+    }
+
+    /// Classify platform/hardware wrappers separately from optional software
+    /// encoders. Actual availability must still pass the local encode probe.
     pub fn is_hardware_encoder_name(name: &str) -> bool {
         [
             "_nvenc",
@@ -161,6 +163,16 @@ impl CodecInfo {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn optional_software_encoder_allowlist_does_not_imply_hardware() {
+        for name in ["libx264", "libx265"] {
+            assert!(super::CodecInfo::is_supported_encoder_name(name));
+            assert!(!super::CodecInfo::is_hardware_encoder_name(name));
+        }
+        for name in ["libopenh264", "h264", "future_h26x_backend"] {
+            assert!(!super::CodecInfo::is_supported_encoder_name(name));
+        }
+    }
     use super::CodecInfo;
 
     #[test]
