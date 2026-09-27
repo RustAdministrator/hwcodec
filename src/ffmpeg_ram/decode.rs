@@ -122,9 +122,34 @@ impl Decoder {
         let frames = &mut *(obj as *mut Vec<DecodeFrame>);
         let datas = from_raw_parts(datas, AV_NUM_DATA_POINTERS as _);
         let linesizes = from_raw_parts(linesizes, AV_NUM_DATA_POINTERS as _);
+        if width <= 0 || height <= 0 {
+            error!("invalid decoded frame size {}x{}", width, height);
+            return;
+        }
+        let rows = height as usize;
+        // 4:2:0 chroma planes have (height + 1) / 2 rows. Truncating an odd
+        // height would make the RGB conversion read past the copied plane.
+        let chroma_rows = rows.div_ceil(2);
+        let plane = |index: usize, rows: usize| -> Option<Vec<u8>> {
+            let linesize = linesizes[index];
+            if linesize <= 0 || datas[index].is_null() {
+                return None;
+            }
+            Some(from_raw_parts(datas[index], linesize as usize * rows).to_vec())
+        };
 
+        // AVPixelFormat only declares the two supported formats, so another
+        // FFmpeg value (10-bit, 4:4:4, gray, ...) must not become an enum value.
+        let pixfmt = if pixfmt == AVPixelFormat::AV_PIX_FMT_YUV420P as c_int {
+            AVPixelFormat::AV_PIX_FMT_YUV420P
+        } else if pixfmt == AVPixelFormat::AV_PIX_FMT_NV12 as c_int {
+            AVPixelFormat::AV_PIX_FMT_NV12
+        } else {
+            error!("unsupported pixfmt {}", pixfmt);
+            return;
+        };
         let mut frame = DecodeFrame {
-            pixfmt: std::mem::transmute(pixfmt),
+            pixfmt,
             width,
             height,
             data: vec![],
@@ -132,10 +157,15 @@ impl Decoder {
             key: key != 0,
         };
 
-        if pixfmt == AVPixelFormat::AV_PIX_FMT_YUV420P as c_int {
-            let y = from_raw_parts(datas[0], (linesizes[0] * height) as usize).to_vec();
-            let u = from_raw_parts(datas[1], (linesizes[1] * height / 2) as usize).to_vec();
-            let v = from_raw_parts(datas[2], (linesizes[2] * height / 2) as usize).to_vec();
+        if pixfmt == AVPixelFormat::AV_PIX_FMT_YUV420P {
+            let (Some(y), Some(u), Some(v)) = (
+                plane(0, rows),
+                plane(1, chroma_rows),
+                plane(2, chroma_rows),
+            ) else {
+                error!("invalid YUV420P planes: linesize={:?}", &linesizes[..3]);
+                return;
+            };
 
             frame.data.push(y);
             frame.data.push(u);
@@ -146,9 +176,11 @@ impl Decoder {
             frame.linesize.push(linesizes[2]);
 
             frames.push(frame);
-        } else if pixfmt == AVPixelFormat::AV_PIX_FMT_NV12 as c_int {
-            let y = from_raw_parts(datas[0], (linesizes[0] * height) as usize).to_vec();
-            let uv = from_raw_parts(datas[1], (linesizes[1] * height / 2) as usize).to_vec();
+        } else {
+            let (Some(y), Some(uv)) = (plane(0, rows), plane(1, chroma_rows)) else {
+                error!("invalid NV12 planes: linesize={:?}", &linesizes[..2]);
+                return;
+            };
 
             frame.data.push(y);
             frame.data.push(uv);
@@ -157,8 +189,6 @@ impl Decoder {
             frame.linesize.push(linesizes[1]);
 
             frames.push(frame);
-        } else {
-            error!("unsupported pixfmt {}", pixfmt as i32);
         }
     }
 
@@ -444,6 +474,79 @@ impl Drop for Decoder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn decode_synthetic(
+        pixfmt: c_int,
+        width: c_int,
+        height: c_int,
+        linesizes: &[c_int],
+    ) -> Vec<DecodeFrame> {
+        let rows = |plane: usize| {
+            if plane == 0 {
+                height as usize
+            } else {
+                (height as usize).div_ceil(2)
+            }
+        };
+        let mut planes: Vec<Vec<u8>> = linesizes
+            .iter()
+            .enumerate()
+            .map(|(index, linesize)| vec![index as u8 + 1; *linesize as usize * rows(index)])
+            .collect();
+        let mut datas = [std::ptr::null_mut::<u8>(); AV_NUM_DATA_POINTERS as usize];
+        let mut sizes = [0 as c_int; AV_NUM_DATA_POINTERS as usize];
+        for (index, plane) in planes.iter_mut().enumerate() {
+            datas[index] = plane.as_mut_ptr();
+            sizes[index] = linesizes[index];
+        }
+        let mut frames: Vec<DecodeFrame> = Vec::new();
+        unsafe {
+            Decoder::callback(
+                &mut frames as *mut Vec<DecodeFrame> as *const c_void,
+                width,
+                height,
+                pixfmt,
+                sizes.as_mut_ptr(),
+                datas.as_mut_ptr(),
+                1,
+            );
+        }
+        frames
+    }
+
+    #[test]
+    fn odd_height_frames_keep_the_last_chroma_row() {
+        let frames = decode_synthetic(AVPixelFormat::AV_PIX_FMT_YUV420P as c_int, 6, 5, &[8, 4, 4]);
+        assert_eq!(frames.len(), 1);
+        let lengths: Vec<usize> = frames[0].data.iter().map(Vec::len).collect();
+        assert_eq!(lengths, [8 * 5, 4 * 3, 4 * 3]);
+
+        let frames = decode_synthetic(AVPixelFormat::AV_PIX_FMT_NV12 as c_int, 6, 5, &[8, 8]);
+        assert_eq!(frames.len(), 1);
+        let lengths: Vec<usize> = frames[0].data.iter().map(Vec::len).collect();
+        assert_eq!(lengths, [8 * 5, 8 * 3]);
+    }
+
+    #[test]
+    fn even_height_frames_are_copied_unchanged() {
+        let frames = decode_synthetic(AVPixelFormat::AV_PIX_FMT_NV12 as c_int, 6, 4, &[8, 8]);
+        let lengths: Vec<usize> = frames[0].data.iter().map(Vec::len).collect();
+        assert_eq!(lengths, [8 * 4, 8 * 2]);
+    }
+
+    #[test]
+    fn unsupported_pixel_formats_are_dropped() {
+        // AV_PIX_FMT_YUV444P = 5, AV_PIX_FMT_YUV420P10LE = 64, AV_PIX_FMT_P010LE = 161.
+        for pixfmt in [5, 64, 161, -1] {
+            assert!(decode_synthetic(pixfmt, 6, 4, &[8, 8, 8]).is_empty());
+        }
+    }
+
+    #[test]
+    fn invalid_sizes_are_dropped() {
+        assert!(decode_synthetic(AVPixelFormat::AV_PIX_FMT_NV12 as c_int, 6, 0, &[8, 8]).is_empty());
+        assert!(decode_synthetic(AVPixelFormat::AV_PIX_FMT_NV12 as c_int, 6, 4, &[8, 0]).is_empty());
+    }
 
     #[test]
     fn decoder_probe_keeps_distinct_backends_for_the_same_format() {
