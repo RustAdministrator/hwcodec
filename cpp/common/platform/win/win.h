@@ -130,6 +130,8 @@ extern "C" uint64_t GetHwcodecGpuSignature();
 extern "C" void hwcodec_get_d3d11_texture_width_height(ID3D11Texture2D *texture, int *w,
                                              int *h);
 
-extern "C" int32_t add_process_to_new_job(DWORD process_id);
+// Puts the process into a new job object that ends it when the job is closed, and returns the
+// job's handle, or nullptr. The caller closes the handle once the process has exited.
+extern "C" void *add_process_to_new_job_handle(DWORD process_id);
 
 #endif
