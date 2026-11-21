@@ -13,6 +13,8 @@
 #define LOG_MODULE "MFXENC"
 #include "log.h"
 
+#include "mfx_vpl_compat.h"
+
 // #define CONFIG_USE_VPP
 #define CONFIG_USE_D3D_CONVERT
 
