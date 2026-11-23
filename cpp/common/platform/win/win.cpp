@@ -753,11 +753,11 @@ void hwcodec_get_d3d11_texture_width_height(ID3D11Texture2D *texture, int *w,
   *h = desc.Height;
 }
 
-int32_t add_process_to_new_job(DWORD process_id) {
+void *add_process_to_new_job_handle(DWORD process_id) {
   HANDLE job_handle = CreateJobObjectW(nullptr, nullptr);
   if (job_handle == nullptr) {
     LOG_ERROR(std::string("Failed to create job object"));
-    return -1;
+    return nullptr;
   }
 
   JOBOBJECT_EXTENDED_LIMIT_INFORMATION job_info = {0};
@@ -773,7 +773,7 @@ int32_t add_process_to_new_job(DWORD process_id) {
   if (result == FALSE) {
     CloseHandle(job_handle);
     LOG_ERROR(std::string("Failed to set job information"));
-    return -1;
+    return nullptr;
   }
 
   // Open the existing process by ID
@@ -781,7 +781,7 @@ int32_t add_process_to_new_job(DWORD process_id) {
   if (process_handle == nullptr) {
     CloseHandle(job_handle);
     LOG_ERROR(std::string("Failed to open process with ID: ") + std::to_string(process_id));
-    return -1;
+    return nullptr;
   }
 
   // Assign the child process to the Job object
@@ -790,11 +790,11 @@ int32_t add_process_to_new_job(DWORD process_id) {
     CloseHandle(process_handle);
     CloseHandle(job_handle);
     LOG_ERROR(std::string("Failed to assign process to job"));
-    return -1;
+    return nullptr;
   }
 
-  // Close process handle (but keep job handle)
+  // Close process handle (but keep job handle: closing it ends the process)
   CloseHandle(process_handle);
 
-  return 0;
+  return job_handle;
 }

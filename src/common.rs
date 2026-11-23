@@ -124,14 +124,31 @@ pub fn setup_parent_death_signal() {
     });
 }
 
+/// The job object a child process was put into so that it ends with the parent. Closing the job
+/// ends the child, so keep this until the child has exited; dropping it closes the job's handle,
+/// which was never closed before (one handle more for every child).
+#[cfg(windows)]
+#[must_use = "dropping the job ends the child process"]
+pub struct ChildJob(*mut std::ffi::c_void);
+
+#[cfg(windows)]
+impl Drop for ChildJob {
+    fn drop(&mut self) {
+        extern "system" {
+            fn CloseHandle(handle: *mut std::ffi::c_void) -> i32;
+        }
+        unsafe {
+            CloseHandle(self.0);
+        }
+    }
+}
+
 // called by parent process
 #[cfg(windows)]
-pub fn child_exit_when_parent_exit(child_process_id: u32) -> bool {
-    unsafe {
-        extern "C" {
-            fn add_process_to_new_job(child_process_id: u32) -> i32;
-        }
-        let result = add_process_to_new_job(child_process_id);
-        result == 0
+pub fn child_exit_when_parent_exit(child_process_id: u32) -> Option<ChildJob> {
+    extern "C" {
+        fn add_process_to_new_job_handle(child_process_id: u32) -> *mut std::ffi::c_void;
     }
+    let job = unsafe { add_process_to_new_job_handle(child_process_id) };
+    (!job.is_null()).then(|| ChildJob(job))
 }
