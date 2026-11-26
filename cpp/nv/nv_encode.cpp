@@ -72,13 +72,14 @@ public:
   int32_t kbs_;
   int32_t framerate_;
   int32_t gop_;
+  int32_t quality_;
   bool full_range_ = false;
   bool bt709_ = false;
   NV_ENC_CONFIG encodeConfig_ = {0};
 
   NvencEncoder(void *handle, int64_t luid, DataFormat dataFormat,
                int32_t width, int32_t height, int32_t kbs, int32_t framerate,
-               int32_t gop) {
+               int32_t gop, int32_t quality) {
     handle_ = handle;
     luid_ = luid;
     dataFormat_ = dataFormat;
@@ -87,6 +88,7 @@ public:
     kbs_ = kbs;
     framerate_ = framerate;
     gop_ = gop;
+    quality_ = quality;
 
     load_driver(&cuda_dl_, &nvenc_dl_);
   }
@@ -137,9 +139,13 @@ public:
     ZeroMemory(&initializeParams, sizeof(initializeParams));
     ZeroMemory(&encodeConfig_, sizeof(encodeConfig_));
     initializeParams.encodeConfig = &encodeConfig_;
+    // The high-quality profile (H264 HQ, H265 HQ) is P5, as on the RAM path
+    // (`util_encode::set_quality`); the tuning stays low latency.
     pEnc_->CreateDefaultEncoderParams(
         &initializeParams, guidCodec,
-        NV_ENC_PRESET_P3_GUID /*NV_ENC_PRESET_LOW_LATENCY_HP_GUID*/,
+        quality_ == Quality_High
+            ? NV_ENC_PRESET_P5_GUID
+            : NV_ENC_PRESET_P3_GUID /*NV_ENC_PRESET_LOW_LATENCY_HP_GUID*/,
         NV_ENC_TUNING_INFO_LOW_LATENCY);
 
     // no delay
@@ -338,11 +344,11 @@ int nv_destroy_encoder(void *encoder) {
 
 void *nv_new_encoder(void *handle, int64_t luid, DataFormat dataFormat,
                      int32_t width, int32_t height, int32_t kbs,
-                     int32_t framerate, int32_t gop) {
+                     int32_t framerate, int32_t gop, int32_t quality) {
   NvencEncoder *e = NULL;
   try {
     e = new NvencEncoder(handle, luid, dataFormat, width, height, kbs,
-                         framerate, gop);
+                         framerate, gop, quality);
     if (!e->init()) {
       goto _exit;
     }
@@ -406,7 +412,7 @@ int nv_test_encode(int64_t *outLuids, int32_t *outVendors, int32_t maxDescNum, i
 
       NvencEncoder *e = (NvencEncoder *)nv_new_encoder(
           (void *)adapter.get()->device_.Get(), currentLuid,
-          dataFormat, width, height, kbs, framerate, gop);
+          dataFormat, width, height, kbs, framerate, gop, Quality_Default);
       if (!e)
         continue;
       if (e->native_->EnsureTexture(e->width_, e->height_)) {

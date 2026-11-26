@@ -58,6 +58,7 @@ fn vram() {
         kbitrate: 5000,
         framerate: 30,
         gop: MAX_GOP as _,
+        high_quality: false,
         device: None,
     });
     encoders.iter().map(|e| println!("{:?}", e)).count();

@@ -34,6 +34,7 @@ fn main() {
                 kbitrate: 5000,
                 framerate: 30,
                 gop: MAX_GOP as _,
+                high_quality: false,
             },
         };
         let de_ctx = DecodeContext {

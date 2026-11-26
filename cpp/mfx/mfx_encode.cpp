@@ -608,7 +608,8 @@ int mfx_destroy_encoder(void *encoder) {
 
 void *mfx_new_encoder(void *handle, int64_t luid,
                       DataFormat dataFormat, int32_t w, int32_t h, int32_t kbs,
-                      int32_t framerate, int32_t gop) {
+                      int32_t framerate, int32_t gop, int32_t quality) {
+  (void)quality; // the high-quality profile is NVENC's only
   VplEncoder *p = NULL;
   try {
     p = new VplEncoder(handle, luid, dataFormat, w, h, kbs, framerate,
@@ -665,7 +666,7 @@ int mfx_test_encode(int64_t *outLuids, int32_t *outVendors, int32_t maxDescNum, 
       
       VplEncoder *e = (VplEncoder *)mfx_new_encoder(
           (void *)adapter.get()->device_.Get(), currentLuid,
-          dataFormat, width, height, kbs, framerate, gop);
+          dataFormat, width, height, kbs, framerate, gop, Quality_Default);
       if (!e)
         continue;
       if (e->native_->EnsureTexture(e->width_, e->height_)) {
