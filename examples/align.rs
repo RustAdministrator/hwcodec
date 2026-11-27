@@ -143,6 +143,7 @@ fn setup_vram(max_align: i32) {
         kbitrate: 1000,
         framerate: 30,
         gop: MAX_GOP as _,
+        high_quality: false,
     });
     let decoders = hwcodec::vram::decode::available();
 
@@ -192,6 +193,7 @@ fn test_vram(
             kbitrate: 1000,
             framerate: 30,
             gop: MAX_GOP as _,
+            high_quality: false,
         },
     };
     let mut encoder = hwcodec::vram::encode::Encoder::new(encode_ctx).unwrap();

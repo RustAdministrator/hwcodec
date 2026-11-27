@@ -10,7 +10,7 @@ int nv_decode_driver_support();
 
 void *nv_new_encoder(void *handle, int64_t luid,
                      int32_t dataFormat, int32_t width, int32_t height,
-                     int32_t bitrate, int32_t framerate, int32_t gop);
+                     int32_t bitrate, int32_t framerate, int32_t gop, int32_t quality);
 
 int nv_encode(void *encoder, void *tex, EncodeCallback callback, void *obj,
               int64_t ms);

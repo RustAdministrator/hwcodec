@@ -77,13 +77,14 @@ public:
   int32_t kbs_;
   int32_t framerate_;
   int32_t gop_;
+  int32_t quality_;
 
   const int align_ = 0;
   const bool full_range_ = false;
   const bool bt709_ = false;
   FFmpegVRamEncoder(void *handle, int64_t luid, DataFormat dataFormat,
                     int32_t width, int32_t height, int32_t kbs,
-                    int32_t framerate, int32_t gop) {
+                    int32_t framerate, int32_t gop, int32_t quality) {
     handle_ = handle;
     luid_ = luid;
     dataFormat_ = dataFormat;
@@ -92,6 +93,7 @@ public:
     kbs_ = kbs;
     framerate_ = framerate;
     gop_ = gop;
+    quality_ = quality;
   }
 
   ~FFmpegVRamEncoder() {}
@@ -134,7 +136,13 @@ public:
     if (!util_encode::set_lantency_free(c_->priv_data, encoder_->name_)) {
       return false;
     }
-    // util_encode::set_quality(c_->priv_data, encoder_->name_, Quality_Default);
+    // The high-quality profile (H264 HQ, H265 HQ) is NVENC's P5, as on the RAM path. Other
+    // encoders keep their defaults: QSV's quality preset is far too slow for a session.
+    if (quality_ == Quality_High &&
+        encoder_->name_.find("nvenc") != std::string::npos &&
+        !util_encode::set_quality(c_->priv_data, encoder_->name_, Quality_High)) {
+      return false;
+    }
     util_encode::set_rate_control(c_, encoder_->name_, RC_CBR, -1);
     util_encode::set_others(c_->priv_data, encoder_->name_);
 
@@ -436,11 +444,12 @@ extern "C" {
 FFmpegVRamEncoder *ffmpeg_vram_new_encoder(void *handle, int64_t luid,
                                            DataFormat dataFormat, int32_t width,
                                            int32_t height, int32_t kbs,
-                                           int32_t framerate, int32_t gop) {
+                                           int32_t framerate, int32_t gop,
+                                           int32_t quality) {
   FFmpegVRamEncoder *encoder = NULL;
   try {
     encoder = new FFmpegVRamEncoder(handle, luid, dataFormat, width,
-                                    height, kbs, framerate, gop);
+                                    height, kbs, framerate, gop, quality);
     if (encoder) {
       if (encoder->init()) {
         return encoder;
@@ -526,7 +535,7 @@ int ffmpeg_vram_test_encode(int64_t *outLuids, int32_t *outVendors, int32_t maxD
         
         FFmpegVRamEncoder *e = (FFmpegVRamEncoder *)ffmpeg_vram_new_encoder(
             (void *)adapter.get()->device_.Get(), currentLuid,
-            dataFormat, width, height, kbs, framerate, gop);
+            dataFormat, width, height, kbs, framerate, gop, Quality_Default);
         if (!e)
           continue;
         if (e->native_->EnsureTexture(e->width_, e->height_)) {

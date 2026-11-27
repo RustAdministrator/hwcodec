@@ -22,6 +22,14 @@ pub struct FeatureContext {
     pub data_format: DataFormat,
 }
 
+impl FeatureContext {
+    /// Whether this encoder has the high-quality profile: NVENC, native or through FFmpeg.
+    /// The RAM path offers it for NVENC only as well.
+    pub fn supports_high_quality(&self) -> bool {
+        self.vendor == Driver::NV && matches!(self.driver, Driver::NV | Driver::FFMPEG)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 pub struct DynamicContext {
     #[serde(skip)]
@@ -31,6 +39,10 @@ pub struct DynamicContext {
     pub kbitrate: i32,
     pub framerate: i32,
     pub gop: i32,
+    /// The high-quality profile (H264 HQ, H265 HQ): NVENC preset P5 instead of P3, as on
+    /// the RAM path. Encoders without it (`FeatureContext::supports_high_quality`) ignore it.
+    #[serde(default)]
+    pub high_quality: bool,
 }
 
 unsafe impl Send for DynamicContext {}
@@ -86,5 +98,35 @@ impl Available {
                 .iter()
                 .any(|d| d.vendor == vendor && d.data_format == data_format)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_nvenc_has_the_high_quality_profile() {
+        let feature = |driver, vendor| FeatureContext {
+            driver,
+            vendor,
+            luid: 1,
+            data_format: DataFormat::H264,
+        };
+        assert!(feature(Driver::NV, Driver::NV).supports_high_quality());
+        assert!(feature(Driver::FFMPEG, Driver::NV).supports_high_quality());
+        assert!(!feature(Driver::FFMPEG, Driver::MFX).supports_high_quality());
+        assert!(!feature(Driver::MFX, Driver::MFX).supports_high_quality());
+        assert!(!feature(Driver::AMF, Driver::AMF).supports_high_quality());
+    }
+
+    /// A context written before the field existed still reads, with the normal profile.
+    #[test]
+    fn a_context_without_the_quality_reads_as_the_normal_profile() {
+        let context: DynamicContext = serde_json::from_str(
+            r#"{"width":1280,"height":720,"kbitrate":5000,"framerate":60,"gop":60}"#,
+        )
+        .unwrap();
+        assert!(!context.high_quality);
     }
 }

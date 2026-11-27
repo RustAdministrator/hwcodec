@@ -12,6 +12,10 @@ use std::{
     slice::from_raw_parts,
 };
 
+// `enum Quality` of cpp/common/common.h.
+const QUALITY_DEFAULT: c_int = 0;
+const QUALITY_HIGH: c_int = 1;
+
 pub struct Encoder {
     calls: EncodeCalls,
     codec: *mut c_void,
@@ -44,6 +48,11 @@ impl Encoder {
                 ctx.d.kbitrate,
                 ctx.d.framerate,
                 ctx.d.gop,
+                if ctx.d.high_quality {
+                    QUALITY_HIGH
+                } else {
+                    QUALITY_DEFAULT
+                },
             );
             if codec.is_null() {
                 return Err(());
